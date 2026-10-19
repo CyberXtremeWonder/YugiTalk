@@ -1,6 +1,6 @@
 /** 检查自有前端类、方法及具名函数是否具备中文用途说明。 */
 import ts from "typescript";
-import { readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -69,6 +69,7 @@ for (const file of [
   visit(tree);
 }
 const report = { declarations: count, missing, passed: missing.length === 0 };
+mkdirSync(path.join(root, "../docs/stages/artifacts"), { recursive: true });
 writeFileSync(
   path.join(root, "../docs/stages/artifacts/modules-frontend-comments.json"),
   JSON.stringify(report, null, 2),

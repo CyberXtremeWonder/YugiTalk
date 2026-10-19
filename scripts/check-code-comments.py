@@ -45,6 +45,7 @@ def main() -> None:
     """保存中文注释检查结果，缺失说明时返回非零退出码。"""
     report = check()
     target = ROOT / "docs/stages/artifacts/modules-python-comments.json"
+    target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(
         json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
     )

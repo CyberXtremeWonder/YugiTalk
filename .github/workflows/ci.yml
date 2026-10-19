@@ -53,7 +53,7 @@ jobs:
         with: {python-version: '3.12'}
       - run: docker compose config --quiet
       # 绑定挂载不自动创建数据目录；全新 Linux 环境先初始化项目路径。
-      - run: mkdir -p data/postgres data/redis data/minio data/etcd data/milvus data/backups
+      - run: mkdir -p data/postgres data/redis data/minio data/etcd data/milvus data/backups docs/stages/artifacts
       - run: docker compose up --build -d --wait --wait-timeout 180
       - run: python scripts/check-stage1-infra.py --fault
       - run: npm ci
