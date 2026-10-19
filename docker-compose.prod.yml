@@ -1,0 +1,252 @@
+# 显式叠加开发基础文件：docker compose --env-file .env.production -f docker-compose.yml -f docker-compose.prod.yml ...
+# 需要 Compose >= 2.24.4；!reset 与 !override 清除开发端口和构建声明。
+# 正式生产容器自动命名为 yugitalk-prod-服务名-序号，与开发和验收隔离。
+name: yugitalk-prod
+x-runtime: &runtime
+  image: ${BACKEND_IMAGE:-yugitalk-backend:0.2.0}
+  restart: unless-stopped
+  read_only: true
+  tmpfs: [/tmp]
+  security_opt: [no-new-privileges:true]
+  cap_drop: [ALL]
+  mem_limit: 768m
+  cpus: 1.0
+  networks: [default, private]
+  logging: &rotation
+    driver: json-file
+    options: {max-size: "10m", max-file: "3"}
+  volumes:
+    - ./${PROD_DATA_ROOT:-data/production}/s3-ca:/etc/yugitalk/s3:ro
+  environment: &production
+    APP_ENV: production
+    LOG_LEVEL: INFO
+    DATABASE_URL: postgresql://yugitalk:${POSTGRES_PASSWORD:?必须配置生产密码}@postgres:5432/yugitalk
+    REDIS_URL: redis://:${REDIS_PASSWORD:?必须配置生产密码}@redis:6379/0
+    STORAGE_ENDPOINT: ${STORAGE_ENDPOINT:?必须配置现有S3服务地址}
+    STORAGE_BUCKET: ${STORAGE_BUCKET:?必须配置项目专用Bucket}
+    STORAGE_REGION: ${STORAGE_REGION:-us-east-1}
+    STORAGE_CA_FILE: ${STORAGE_CA_FILE:-}
+    STORAGE_ADDRESSING_STYLE: ${STORAGE_ADDRESSING_STYLE:-path}
+    STORAGE_ACCESS_KEY: ${STORAGE_ACCESS_KEY:?必须配置生产存储凭证}
+    STORAGE_SECRET_KEY: ${STORAGE_SECRET_KEY:?必须配置生产存储凭证}
+    MILVUS_URI: http://milvus:19530
+    MILVUS_TOKEN: root:${MILVUS_PASSWORD:?必须配置生产向量库密码}
+    MODEL_PROVIDER: ${MODEL_PROVIDER:?必须配置真实模型}
+    MODEL_ID: ${MODEL_ID:?必须配置真实模型名称}
+    MODEL_BASE_URL: ${MODEL_BASE_URL:?必须配置真实模型服务地址}
+    MODEL_API_KEY: ${MODEL_API_KEY:?必须配置真实模型密钥}
+    MODEL_CA_FILE: ${MODEL_CA_FILE:-}
+    MODEL_MAX_STREAM_BYTES: ${MODEL_MAX_STREAM_BYTES:-4194304}
+    TOOL_HTTP_ALLOWED_HOSTS: '${TOOL_HTTP_ALLOWED_HOSTS:-[]}'
+    TOOL_SECRETS: '${TOOL_SECRETS:-{}}'
+    AMAP_API_KEY: ${AMAP_API_KEY:-}
+    TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+    REGISTRATION_ENABLED: ${REGISTRATION_ENABLED:-true}
+    SMTP_HOST: ${SMTP_HOST:-}
+    SMTP_PORT: ${SMTP_PORT:-465}
+    SMTP_TLS: ${SMTP_TLS:-ssl}
+    SMTP_USERNAME: ${SMTP_USERNAME:-}
+    SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+    SMTP_SENDER: ${SMTP_SENDER:-}
+    # 七步 RAG：角色沿用当前模型协议，重排默认关闭。
+    RAG_TIMEOUT_SECONDS: ${RAG_TIMEOUT_SECONDS:-60}
+    RAG_PARALLEL_QUERIES: ${RAG_PARALLEL_QUERIES:-4}
+    RAG_FAST_MODEL: ${RAG_FAST_MODEL:-}
+    RAG_FAST_API_KEY: ${RAG_FAST_API_KEY:-}
+    RAG_GRAPH_ENABLED: ${RAG_GRAPH_ENABLED:-true}
+    RAG_GRADER_MODEL: ${RAG_GRADER_MODEL:-}
+    RAG_GRADER_API_KEY: ${RAG_GRADER_API_KEY:-}
+    RAG_CANDIDATE_LIMIT: ${RAG_CANDIDATE_LIMIT:-24}
+    RAG_CONTEXT_CHARACTERS: ${RAG_CONTEXT_CHARACTERS:-5000}
+    RAG_MERGE_RATIO: ${RAG_MERGE_RATIO:-0.5}
+    RAG_HITL_TTL_SECONDS: ${RAG_HITL_TTL_SECONDS:-1800}
+    RAG_RERANK_URL: ${RAG_RERANK_URL:-}
+    RAG_RERANK_MODEL: ${RAG_RERANK_MODEL:-}
+    RAG_RERANK_API_KEY: ${RAG_RERANK_API_KEY:-}
+    RAG_RERANK_TIMEOUT_SECONDS: ${RAG_RERANK_TIMEOUT_SECONDS:-3}
+    RAG_RERANK_MAX_CHARACTERS: ${RAG_RERANK_MAX_CHARACTERS:-12000}
+    RAG_RERANK_FAILURE_THRESHOLD: ${RAG_RERANK_FAILURE_THRESHOLD:-3}
+    RAG_RERANK_COOLDOWN_SECONDS: ${RAG_RERANK_COOLDOWN_SECONDS:-30}
+    EMBEDDING_PROVIDER: openai_compatible
+    EMBEDDING_MODEL: ${EMBEDDING_MODEL:-BAAI/bge-m3}
+    EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-http://embedding:8000/v1}
+    EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:?必须配置生产嵌入认证}
+    SESSION_SECRET: ${SESSION_SECRET:?必须配置生产会话密钥}
+    AUTH_TRUSTED_ORIGINS: '["${PUBLIC_ORIGIN:?必须配置HTTPS来源}"]'
+    CORS_ORIGINS: '[]'
+    TASK_BUDGET_ENABLED: ${TASK_BUDGET_ENABLED:-false}
+    CUMULATIVE_BUDGET_ENABLED: ${CUMULATIVE_BUDGET_ENABLED:-false}
+    WORKSPACE_TOKEN_BUDGET: ${WORKSPACE_TOKEN_BUDGET:-100000}
+    USER_TOKEN_BUDGET: ${USER_TOKEN_BUDGET:-100000}
+    WORKSPACE_CONCURRENCY: ${WORKSPACE_CONCURRENCY:-4}
+    USER_CONCURRENCY: ${USER_CONCURRENCY:-2}
+    METRICS_TOKEN: ${METRICS_TOKEN:?必须配置内部指标认证}
+    OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+    OTEL_SAMPLE_RATIO: ${OTEL_SAMPLE_RATIO:-0.1}
+    LANGCHAIN_TRACING_V2: "false"
+services:
+  api:
+    <<: *runtime
+    # 20并发时提交、权限复核与流式读取共享CPU；明确容量，按实际配置复验。
+    cpus: 2.0
+    build: !reset null
+    ports: !reset []
+    depends_on: !override
+      migrate: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+      milvus: {condition: service_healthy}
+  worker:
+    <<: *runtime
+    mem_limit: 1536m
+  scheduler:
+    <<: *runtime
+    mem_limit: 512m
+  migrate:
+    <<: *runtime
+    restart: "no"
+  postgres:
+    networks: !override [private]
+    # 首次初始化的临时实例仅监听 Unix socket，TCP 探测避免提前启动迁移。
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -h 127.0.0.1 -U yugitalk -d yugitalk"]
+    ports: !reset []
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?必须配置生产密码}
+    volumes: !override
+      - type: bind
+        source: ./${PROD_DATA_ROOT:-data/production}/postgres
+        target: /var/lib/postgresql/data
+        bind: {create_host_path: false}
+    restart: unless-stopped
+    mem_limit: 1g
+    cpus: 1.0
+    logging: *rotation
+  redis:
+    networks: !override [private]
+    ports: !reset []
+    command: [redis-server, /etc/yugitalk/redis.conf]
+    healthcheck:
+      test: [CMD-SHELL, 'REDISCLI_AUTH=$$REDIS_PASSWORD redis-cli ping']
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?必须配置生产密码}
+    volumes: !override
+      - type: bind
+        source: ./${PROD_DATA_ROOT:-data/production}/redis
+        target: /data
+        bind: {create_host_path: false}
+      - type: bind
+        source: ./${PROD_DATA_ROOT:-data/production}/config/redis.conf
+        target: /etc/yugitalk/redis.conf
+        read_only: true
+        bind: {create_host_path: false}
+    restart: unless-stopped
+    mem_limit: 512m
+    logging: *rotation
+  storage:
+    # 旧MinIO只供本机隔离测试；正式部署连接现有S3，默认不启动该服务。
+    profiles: !override [local-test-storage]
+    networks: !override [private]
+    ports: !reset []
+    environment:
+      MINIO_ROOT_USER: ${STORAGE_ACCESS_KEY:?必须配置生产存储凭证}
+      MINIO_ROOT_PASSWORD: ${STORAGE_SECRET_KEY:?必须配置生产存储凭证}
+    volumes: !override
+      - type: bind
+        source: ./${PROD_DATA_ROOT:-data/production}/minio
+        target: /data
+        bind: {create_host_path: false}
+    restart: unless-stopped
+    mem_limit: 1g
+    logging: *rotation
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.34@sha256:2c029095680c13c2b36116cc3935e1b0cddc0f5af78004457fd863616d8d072b
+    networks: !override [private]
+    ports: !reset []
+    volumes: !override
+      - type: bind
+        source: ./${PROD_DATA_ROOT:-data/production}/etcd
+        target: /etcd
+        bind: {create_host_path: false}
+    restart: unless-stopped
+    mem_limit: 512m
+    logging: *rotation
+  milvus:
+    image: milvusdb/milvus:v2.5.27@sha256:ea3b924dfb2129fa2daca569eab657b4fcebc4baaed5706cf30d51e19d99b0c9
+    networks: !override [default, private]
+    depends_on: !override
+      etcd: {condition: service_healthy}
+    ports: !reset []
+    environment:
+      MINIO_ADDRESS: ${S3_HOST:?必须配置S3主机}
+      # 端口、TLS、Bucket、前缀及Region由初始化脚本写入user.yaml。
+      MINIO_ACCESS_KEY_ID: ${STORAGE_ACCESS_KEY:?必须配置生产存储凭证}
+      MINIO_SECRET_ACCESS_KEY: ${STORAGE_SECRET_KEY:?必须配置生产存储凭证}
+    volumes: !override
+      - ./${PROD_DATA_ROOT:-data/production}/s3-ca:/etc/yugitalk/s3:ro
+      - type: bind
+        source: ./${PROD_DATA_ROOT:-data/production}/milvus
+        target: /var/lib/milvus
+        bind: {create_host_path: false}
+      - type: bind
+        source: ./${PROD_DATA_ROOT:-data/production}/config/milvus.yaml
+        target: /milvus/configs/user.yaml
+        read_only: true
+        bind: {create_host_path: false}
+    restart: unless-stopped
+    mem_limit: 3g
+    cpus: 2.0
+    logging: *rotation
+  embedding:
+    image: yugitalk-embedding:0.2.0
+    networks: !override [private]
+    ports: !reset []
+    logging: *rotation
+  frontend:
+    image: ${FRONTEND_IMAGE:-yugitalk-frontend:0.2.0}
+    build: !reset null
+    ports: !override ["${HTTPS_BIND_ADDRESS:-0.0.0.0}:${HTTPS_PORT:-443}:8443", "${HTTPS_BIND_ADDRESS:-0.0.0.0}:${HTTP_PORT:-80}:8080"]
+    volumes:
+      - type: bind
+        source: ./${PROD_DATA_ROOT:-data/production}/config/nginx.conf
+        target: /etc/nginx/conf.d/default.conf
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ./${PROD_DATA_ROOT:-data/production}/tls
+        target: /etc/yugitalk/tls
+        read_only: true
+        bind: {create_host_path: false}
+    restart: unless-stopped
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 256m
+    logging: *rotation
+    healthcheck:
+      test: [CMD, wget, --no-check-certificate, -q, -O, /dev/null, "https://127.0.0.1:8443/health/live"]
+  prometheus:
+    networks: [private]
+    image: prom/prometheus:v3.13.4@sha256:87861b8cf91579109319ebc300f3f1060e6da9c05d6ae8ad15a20c879e84e32e
+    command: [--config.file=/etc/prometheus/prometheus.yml, --storage.tsdb.path=/prometheus, --storage.tsdb.retention.time=14d, --storage.tsdb.retention.size=2GB]
+    volumes:
+      - ./${PROD_DATA_ROOT:-data/production}/prometheus:/prometheus
+      - ./deploy/prometheus.yaml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/alerts.yaml:/etc/yugitalk/alerts.yaml:ro
+      - ./${PROD_DATA_ROOT:-data/production}/config/metrics-token:/etc/yugitalk/metrics-token:ro
+    restart: unless-stopped
+    mem_limit: 512m
+    logging: *rotation
+  jaeger:
+    networks: [private]
+    image: jaegertracing/jaeger:2.22.0@sha256:836b967b5abcf1f7758066aa6b348619267a2f1459f72d472840570f9bd88a17
+    command: [--config=/etc/yugitalk/jaeger.yaml]
+    volumes:
+      - ./deploy/jaeger.yaml:/etc/yugitalk/jaeger.yaml:ro
+      - ./${PROD_DATA_ROOT:-data/production}/jaeger:/data
+    restart: unless-stopped
+    mem_limit: 512m
+    logging: *rotation
+networks:
+  private:
+    internal: true

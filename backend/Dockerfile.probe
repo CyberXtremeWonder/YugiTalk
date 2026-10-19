@@ -1,0 +1,10 @@
+FROM python:3.12.12-slim-bookworm@sha256:593bd06efe90efa80dc4eee3948be7c0fde4134606dd40d8dd8dbcade98e669c
+WORKDIR /probe
+COPY requirements.probe.txt .
+RUN pip install --no-cache-dir -r requirements.probe.txt
+COPY probes ./probes
+COPY tests ./tests
+COPY pyproject.toml .
+RUN useradd --create-home probe && chown -R probe:probe /probe
+USER probe
+CMD ["python", "-m", "celery", "-A", "probes.worker:queue", "worker", "--loglevel=INFO", "--concurrency=1"]

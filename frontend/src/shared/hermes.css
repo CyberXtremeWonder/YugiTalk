@@ -1,0 +1,531 @@
+/* 参考用户提供的 Hermes 截图，统一轻量工作台的颜色与布局。 */
+:root,
+[data-theme="light"] {
+  --canvas: #edf1f6;
+  --bg: #ffffff;
+  --sidebar: #fafbfe;
+  --surface: #ffffff;
+  --text: #252d3d;
+  --muted: #717d92;
+  --line: #e5ebf4;
+  --active: #eaf2ff;
+  --accent: #242a35;
+  --accent-ink: #ffffff;
+  --orange: #477ee8;
+  --icon: #ffffff;
+}
+[data-theme="dark"] {
+  --canvas: #101722;
+  --bg: #151c29;
+  --sidebar: #121926;
+  --surface: #1b2433;
+  --text: #e4eaf5;
+  --muted: #a0adc1;
+  --line: #2a374b;
+  --active: #233957;
+  --accent: #e4eaf5;
+  --accent-ink: #151c29;
+  --orange: #94baff;
+  --icon: #151c29;
+}
+body {
+  padding: 12px;
+  background: var(--canvas);
+  font-size: 14px;
+}
+.app-shell {
+  grid-template-columns: 218px minmax(0, 1fr);
+  border-radius: 12px;
+  box-shadow: 0 12px 48px #10223b14;
+}
+.sidebar {
+  padding: 18px 12px 12px;
+  gap: 14px;
+  border-right-color: var(--line);
+}
+.brand {
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: -0.5px;
+  gap: 8px;
+  margin: 0 6px;
+}
+.brand-mark {
+  width: 26px;
+  height: 26px;
+  font-size: 14px;
+  font-weight: 600;
+  border-radius: 7px;
+  letter-spacing: -1px;
+}
+.brand-dot {
+  margin-left: -6px;
+}
+.workspace-selector {
+  font-size: 11px;
+  color: var(--muted);
+}
+.workspace-selector select {
+  margin-top: 4px;
+  padding: 6px 8px;
+  font-size: 12px;
+  border-radius: 6px;
+  background: var(--surface);
+}
+.new-chat {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-weight: 500;
+}
+.new-chat:hover {
+  background: var(--active);
+}
+nav button {
+  padding: 7px 9px;
+  font-size: 12px;
+  border-radius: 5px;
+  gap: 8px;
+}
+nav button[aria-current] {
+  color: var(--orange);
+  font-weight: 500;
+}
+.nav-icon {
+  width: 20px;
+  height: 20px;
+  font-size: 14px;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+}
+nav button[aria-current] .nav-icon {
+  color: var(--orange);
+}
+.history {
+  padding: 0 3px;
+  max-height: none;
+  flex: 1 1 90px;
+}
+.history h2 {
+  color: var(--orange);
+  font-weight: 600;
+  letter-spacing: 1.5px;
+  margin-bottom: 8px;
+}
+.history button {
+  padding: 6px 9px;
+  font-size: 12px;
+  border-radius: 4px;
+}
+.history button[aria-current="page"] {
+  border-radius: 4px;
+  color: var(--orange);
+}
+.history summary {
+  font-size: 11px;
+}
+.sidebar-bottom {
+  padding-top: 6px;
+}
+.sidebar-option {
+  padding: 5px 8px;
+  font-size: 12px;
+}
+.profile {
+  padding-top: 9px;
+  margin-top: 8px;
+}
+.profile div > span {
+  font-size: 11px;
+}
+.topbar {
+  min-height: 48px;
+  padding: 0 24px;
+  border-bottom: 1px solid var(--line);
+}
+.header-title {
+  gap: 10px;
+  font-size: 12px;
+}
+.model-label {
+  font-size: 11px;
+  padding-left: 10px;
+}
+.preview-badge {
+  background: transparent;
+  color: var(--muted);
+  border: 0;
+  font-size: 11px;
+}
+.chat-view,
+.chat-view.has-messages {
+  padding: 16px 5vw 0;
+}
+.chat-content .welcome {
+  margin-top: clamp(24px, 8vh, 90px);
+}
+.assistant-symbol {
+  width: 42px;
+  height: 42px;
+  border-radius: 12px;
+  margin-bottom: 16px;
+  background: var(--active);
+}
+.assistant-symbol svg {
+  width: 30px;
+  height: 30px;
+  fill: var(--orange);
+}
+.assistant-symbol circle {
+  fill: var(--bg);
+}
+.welcome h1 {
+  font-size: clamp(24px, 3vw, 32px);
+  font-weight: 500;
+  letter-spacing: -0.6px;
+}
+.quick-actions {
+  gap: 10px;
+}
+.quick-actions button {
+  background: transparent;
+  border: 1px solid var(--line);
+  padding: 12px;
+  border-radius: 8px;
+  font-size: 12px;
+}
+.quick-icon {
+  background: var(--active);
+  color: var(--orange);
+  border-radius: 6px;
+}
+.message-list {
+  width: min(100%, 820px);
+  padding: 0 8px;
+}
+.message {
+  font-size: 14px;
+  padding: 14px 4px;
+}
+.message.user {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 10px 14px;
+  margin: 12px 0;
+}
+.message.user p {
+  margin: 5px 0;
+}
+.message.user > strong {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 500;
+}
+.message h1,
+.message h2 {
+  font-size: 19px;
+  font-weight: 600;
+}
+.message h3 {
+  font-size: 16px;
+  font-weight: 600;
+}
+.process-summary {
+  font-size: 12px;
+  margin: 8px 0;
+}
+.process-summary ol {
+  margin-top: 7px;
+}
+.chat-bottom {
+  width: min(100%, 820px);
+  padding-top: 8px;
+}
+.composer {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 12px 14px;
+  box-shadow: 0 2px 12px #10223b06;
+}
+.composer textarea {
+  font-size: 14px;
+  min-height: 48px;
+  padding: 0;
+}
+.composer-bottom {
+  gap: 8px;
+}
+.composer select {
+  font-size: 11px;
+  padding: 5px 4px;
+}
+.send,
+.stop-task {
+  width: 30px;
+  height: 30px;
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+.send:hover:not(:disabled),
+.stop-task:hover:not(:disabled) {
+  background: var(--accent);
+  opacity: 0.85;
+}
+.input-hint,
+.run-status {
+  font-size: 11px;
+}
+.status-footer {
+  min-height: 24px;
+  padding: 4px 24px;
+  font-size: 10px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+}
+.secondary-view {
+  padding-top: 28px;
+}
+.secondary-view h1 {
+  font-size: 26px;
+  font-weight: 500;
+  letter-spacing: -0.5px;
+}
+.view-symbol {
+  background: var(--active);
+  color: var(--orange);
+}
+.account-settings,
+.admin-panel,
+.login-card {
+  border-color: var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+}
+/* 保留键盘焦点可见性，鼠标点击不恢复旧的橙色描边。 */
+/* 登录与注册复用工作台色板，卡片恢复边框和完整的内容留白。 */
+.login-shell {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 24px;
+  gap: 24px;
+}
+.login-card {
+  width: min(100%, 440px);
+  padding: 32px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: 0 8px 30px #10223b06;
+}
+.login-card h1 {
+  font-size: 28px;
+  font-weight: 500;
+  letter-spacing: -0.5px;
+}
+.login-kicker,
+.login-note {
+  color: var(--muted);
+}
+.login-card > p {
+  color: var(--muted);
+}
+.login-card form {
+  margin-top: 22px;
+  gap: 10px;
+}
+.login-shell input {
+  background: var(--surface);
+  color: var(--text);
+  border-color: var(--line);
+  border-radius: 7px;
+}
+.login-card label {
+  font-size: 13px;
+}
+.auth-tabs {
+  margin-top: 20px;
+}
+.auth-tabs button {
+  flex: 1;
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-size: 13px;
+}
+.auth-tabs button[aria-pressed="true"] {
+  background: var(--active);
+  border-color: var(--line);
+  color: var(--orange);
+}
+.login-card .new-chat {
+  text-align: center;
+  background: var(--accent);
+  color: var(--accent-ink);
+  border-color: var(--accent);
+  margin-top: 8px;
+  padding: 10px 14px;
+}
+.login-card .new-chat:hover:not(:disabled) {
+  opacity: 0.88;
+}
+.login-card .development-choice input {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: var(--orange);
+}
+.verification-row button {
+  font-size: 12px;
+  border-radius: 7px;
+  padding: 8px 10px;
+}
+.login-note {
+  font-size: 12px !important;
+  margin-top: 18px;
+}
+[data-focus-input="keyboard"] .composer:focus-within {
+  outline-color: var(--orange);
+}
+@media (max-width: 900px) and (min-width: 641px) {
+  .app-shell {
+    grid-template-columns: 190px minmax(0, 1fr);
+  }
+  .sidebar {
+    padding-inline: 10px;
+  }
+  .chat-view,
+  .chat-view.has-messages {
+    padding-inline: 20px;
+  }
+}
+@media (max-width: 640px) {
+  .login-shell {
+    padding: 20px 16px;
+    border-radius: 0;
+    border: 0;
+  }
+  .login-card {
+    padding: 24px 20px;
+  }
+  .login-shell input {
+    font-size: 16px;
+  }
+  body {
+    padding: 0;
+  }
+  .app-shell {
+    grid-template-columns: minmax(0, 1fr);
+    border-radius: 0;
+    box-shadow: none;
+  }
+  .sidebar {
+    width: min(280px, 85vw);
+  }
+  .topbar {
+    padding: 0 14px;
+    min-height: 48px;
+  }
+  .chat-view,
+  .chat-view.has-messages {
+    padding: 12px 12px 0;
+  }
+  .message-list {
+    padding: 0;
+  }
+  .composer {
+    padding: 10px;
+  }
+  .composer textarea {
+    font-size: 16px;
+  }
+  .status-footer {
+    padding: 4px 14px;
+  }
+  .profile div > span {
+    font-size: 11px;
+  }
+}
+
+/* 助手删除确认沿用工作台主题，独立于浏览器原生窗口。 */
+.agent-confirm-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: #101b304d;
+  backdrop-filter: blur(3px);
+}
+.agent-confirm-dialog {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  z-index: 101;
+  transform: translate(-50%, -50%);
+  width: min(440px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto;
+  padding: 28px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 24px 80px #07142e33;
+}
+.agent-confirm-icon {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  margin-bottom: 18px;
+  border-radius: 12px;
+  color: var(--import-error);
+  background: color-mix(in srgb, var(--import-error) 10%, var(--surface));
+}
+.agent-confirm-icon svg {
+  width: 22px;
+  height: 22px;
+}
+.agent-confirm-title {
+  margin: 0 0 10px;
+  font-size: 19px;
+  font-weight: 600;
+}
+.agent-confirm-description {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.8;
+  overflow-wrap: anywhere;
+}
+.agent-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 26px;
+}
+.agent-confirm-actions button {
+  min-height: 38px;
+  padding: 8px 18px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  color: var(--text);
+  background: var(--surface);
+  font-size: 13px;
+  font-weight: 500;
+}
+.agent-confirm-actions button:hover {
+  background: var(--active);
+}
+.agent-confirm-actions .agent-confirm-delete {
+  border-color: var(--accent);
+  color: var(--accent-ink);
+  background: var(--accent);
+}
+.agent-confirm-actions .agent-confirm-delete:hover {
+  background: color-mix(in srgb, var(--accent) 85%, var(--surface));
+}

@@ -1,0 +1,14 @@
+# 真实 BGE、S3、Milvus 的隔离知识库验收，聊天模型继续使用 Mock。
+services:
+  api:
+    environment: &knowledge-test
+      EMBEDDING_PROVIDER: openai_compatible
+      EMBEDDING_MODEL: BAAI/bge-m3
+      EMBEDDING_DIMENSION: 1024
+      EMBEDDING_BASE_URL: ${STAGE4_EMBEDDING_BASE_URL:-http://host.docker.internal:18081/v1}
+      EMBEDDING_API_KEY: ${STAGE4_EMBEDDING_API_KEY:-dev-embedding-key}
+      EMBEDDING_TIMEOUT_SECONDS: 120
+      VECTOR_COLLECTION_PREFIX: ${STAGE4_COLLECTION_PREFIX:?验收脚本生成}
+      STORAGE_BUCKET: ${STAGE4_STORAGE_BUCKET:?验收脚本生成}
+  worker:
+    environment: *knowledge-test

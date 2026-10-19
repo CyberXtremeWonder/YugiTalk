@@ -1,0 +1,14 @@
+# 复用项目锁定依赖，仅替换为相同版本的 CUDA PyTorch；模型仍使用本地缓存。
+FROM yugitalk-embedding:0.1.0
+USER root
+ARG PIP_INDEX_URL=https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple
+ARG CUDA_TORCH_WHEEL_URL=https://mirror.sjtu.edu.cn/pytorch-wheels/cu128/torch-2.8.0%2Bcu128-cp312-cp312-manylinux_2_28_x86_64.whl#sha256=4354fc05bb79b208d6995a04ca1ceef6a9547b1c4334435574353d381c55087c
+RUN pip install --no-cache-dir --timeout 120 --retries 5 \
+    --index-url "$PIP_INDEX_URL" "uv==0.12.12"
+# 并发下载 CUDA 运行库，避免首次构建逐个下载大型依赖。
+RUN UV_CONCURRENT_DOWNLOADS=8 UV_HTTP_TIMEOUT=120 uv pip install \
+    --system --no-cache "torch @ $CUDA_TORCH_WHEEL_URL" \
+    --index-url "$PIP_INDEX_URL"
+COPY backend/app/rag/local_embedding.py /app/server.py
+ENV BGE_DEVICE=auto
+USER yugitalk

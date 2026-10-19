@@ -1,0 +1,27 @@
+# 单独的调度器和短租约仅用于阶段 5 故障验收，不改变开发环境参数。
+services:
+  api:
+    environment:
+      RUN_LEASE_SECONDS: 10
+      RECOVERY_INTERVAL_SECONDS: 1
+  worker:
+    environment:
+      RUN_LEASE_SECONDS: 10
+      RECOVERY_INTERVAL_SECONDS: 1
+  scheduler:
+    extends:
+      file: docker-compose.stage2-test.yml
+      service: api
+    command: [python, start.py, --mode, scheduler]
+    environment:
+      TASK_QUEUE: ${STAGE3_TASK_QUEUE:?验收脚本生成}
+      MODEL_PROVIDER: mock
+      MODEL_ID: mock-v1
+      RUN_LEASE_SECONDS: 10
+      RECOVERY_INTERVAL_SECONDS: 1
+      STORAGE_BUCKET: ${STAGE4_STORAGE_BUCKET:?验收脚本生成}
+      VECTOR_COLLECTION_PREFIX: ${STAGE4_COLLECTION_PREFIX:?验收脚本生成}
+      EMBEDDING_BASE_URL: ${STAGE4_EMBEDDING_BASE_URL:?验收脚本生成}
+      EMBEDDING_API_KEY: ${STAGE4_EMBEDDING_API_KEY:?验收脚本生成}
+    healthcheck:
+      disable: true

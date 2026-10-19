@@ -1,0 +1,8 @@
+root = true
+
+[*]
+charset = utf-8
+
+# Windows PowerShell 5.1 需要 BOM 才能正确识别脚本中的中文。
+[*.ps1]
+charset = utf-8-bom

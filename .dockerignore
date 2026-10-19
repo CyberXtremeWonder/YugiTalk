@@ -1,0 +1,9 @@
+# 根目录作为嵌入镜像构建上下文，只允许提交离线服务代码与依赖清单。
+**
+!embedding/
+!embedding/Dockerfile
+!embedding/requirements.runtime.txt
+!backend/
+!backend/app/
+!backend/app/rag/
+!backend/app/rag/local_embedding.py

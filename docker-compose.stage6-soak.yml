@@ -1,0 +1,20 @@
+# 只用于本机隔离稳定性压测：采用原生Mock，不能用于正式部署。
+# HTTPS、真实嵌入与存储保持生产配置；额度控制仍启用，但测试容量单独提高。
+x-soak: &soak
+  APP_ENV: test
+  MODEL_PROVIDER: mock
+  MODEL_ID: mock-v1
+  WORKSPACE_TOKEN_BUDGET: "1000000000"
+  USER_TOKEN_BUDGET: "1000000000"
+  WORKSPACE_CONCURRENCY: "32"
+  OTEL_SAMPLE_RATIO: "0.1"
+services:
+  api:
+    environment: *soak
+  worker:
+    environment: *soak
+    # 明确记录压测容量；单个默认Worker为2进程，不能宣称二者性能相同。
+    command: [python, -m, celery, -A, app.tasks.celery_app:celery_app, worker, --loglevel=INFO, --concurrency=8, --queues=yugitalk, "--hostname=yugitalk@%h"]
+    cpus: 2.0
+  scheduler:
+    environment: *soak

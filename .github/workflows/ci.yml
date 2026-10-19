@@ -1,0 +1,71 @@
+name: 工程、依赖安全与 Agent 闭环验证
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - uses: astral-sh/setup-uv@v6
+        with: {version: '0.12.12'}
+      - run: uv sync --frozen
+      - run: uv run --frozen ruff check .
+      - run: uv run --frozen ruff check ../scripts/init-production.py ../scripts/production-data.py ../scripts/deploy-production.py ../scripts/check-stage6-production.py ../scripts/check-stage6-restore.py ../scripts/check-stage6-latency.py ../scripts/stage6-model-fixture.py
+      - run: uv run --frozen python ../scripts/check-code-comments.py
+      - run: uv run --frozen python ../scripts/test-persistent-copy.py
+      - run: uv run --frozen ruff format --check .
+      - run: uv run --frozen mypy app start.py probes
+      - run: uv run --frozen pytest -q --junitxml=stage1-tests.xml
+      - run: uv run --frozen python start.py --check
+      - run: uv run --frozen alembic upgrade head --sql
+      # 只扫描锁定运行依赖；镜像基础层在生产验收独立扫描，不能用此项替代。
+      - run: uv run --frozen pip-audit --disable-pip --no-deps -r requirements.runtime.txt
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: '22'}
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run check:comments
+      - run: npm run typecheck
+      - run: npm run format:check
+      - run: npm test
+      - run: npm run build
+      - run: npm audit --omit=dev --registry=https://registry.npmjs.org
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: '22'}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - run: docker compose config --quiet
+      # 绑定挂载不自动创建数据目录；全新 Linux 环境先初始化项目路径。
+      - run: mkdir -p data/postgres data/redis data/minio data/etcd data/milvus data/backups
+      - run: docker compose up --build -d --wait --wait-timeout 180
+      - run: python scripts/check-stage1-infra.py --fault
+      - run: npm ci
+        working-directory: frontend
+      - run: npx playwright install --with-deps chromium
+        working-directory: frontend
+      - uses: astral-sh/setup-uv@v6
+        with: {version: '0.12.12'}
+      - run: uv sync --project backend --frozen
+      - run: backend/.venv/bin/python scripts/check-stage2-integration.py --stage3
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: {name: integration-evidence, path: 'docs/stages/artifacts/stage*-*'}
+      - run: docker compose down
+        if: always()

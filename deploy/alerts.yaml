@@ -1,0 +1,14 @@
+# 这些规则产生 Prometheus 告警状态，外部通知渠道由运维配置。
+groups:
+  - name: yugitalk
+    rules:
+      - alert: YugiTalkApiUnavailable
+        expr: up{job="yugitalk-api"} == 0
+        for: 2m
+        labels: {severity: critical}
+        annotations: {summary: "API 指标抓取连续失败"}
+      - alert: YugiTalkHttpErrors
+        expr: sum(rate(yugitalk_http_requests_total{status=~"5.."}[5m])) / clamp_min(sum(rate(yugitalk_http_requests_total[5m])), 0.001) > 0.05
+        for: 5m
+        labels: {severity: warning}
+        annotations: {summary: "API 五分钟错误率超过百分之五"}

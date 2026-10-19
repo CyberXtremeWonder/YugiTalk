@@ -1,0 +1,47 @@
+{
+  "name": "yugitalk-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run src",
+    "test:e2e": "playwright test --config=playwright.stage1.config.ts",
+    "test:stage2": "playwright test --config=playwright.stage2.config.ts",
+    "check:toolchain": "node scripts/check-toolchain.mjs",
+    "check:comments": "node scripts/check-code-comments.mjs",
+    "format:check": "prettier --check src scripts vite.config.ts tsconfig.json eslint.config.js playwright.stage*.config.ts tests/stage1 tests/stage2 tests/stage3 tests/stage4 tests/stage5 tests/stage6 index.html package.json",
+    "test:stage3": "playwright test --config=playwright.stage3.config.ts",
+    "test:stage4": "playwright test --config=playwright.stage4.config.ts",
+    "test:stage5": "playwright test --config=playwright.stage5.config.ts",
+    "test:stage6": "playwright test --config=playwright.stage6.config.ts"
+  },
+  "dependencies": {
+    "@radix-ui/react-dialog": "1.2.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "react-markdown": "10.1.0",
+    "remark-gfm": "4.0.1"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "4.13.0",
+    "@eslint/js": "10.0.1",
+    "@playwright/test": "1.64.0",
+    "@types/node": "26.6.4",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "eslint": "10.12.0",
+    "prettier": "3.9.9",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.71.1",
+    "vite": "8.3.4",
+    "vitest": "5.0.3"
+  }
+}

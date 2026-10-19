@@ -1,0 +1,16 @@
+# 自动启动脚本仅在 Docker GPU 探测通过时加载；无 GPU 时不请求设备。
+services:
+  embedding:
+    image: yugitalk-embedding:0.1.0-cuda
+    build:
+      context: .
+      dockerfile: embedding/Dockerfile.cuda
+    environment:
+      BGE_DEVICE: auto
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

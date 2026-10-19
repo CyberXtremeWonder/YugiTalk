@@ -1,0 +1,15 @@
+# 云端只提供 HTTPS 入口，证书由 Caddy 自动申请和续期。
+yugiagent.fun {
+    # 禁止通过公网访问内部路径。
+    @internal path /internal/*
+    respond @internal 404
+    reverse_proxy 127.0.0.1:18080 {
+        # 立即刷新响应，避免 Agent 的流式输出被缓冲。
+        flush_interval -1
+    }
+    header {
+        X-Content-Type-Options nosniff
+        Referrer-Policy same-origin
+        X-Frame-Options DENY
+    }
+}

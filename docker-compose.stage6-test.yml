@@ -1,0 +1,38 @@
+# 仅用于隔离验收，替身验证协议与部署，真实供应商另行评测。
+services:
+  storage:
+    # 测试替身保留原隔离原文数据；不能发布到正式环境。
+    profiles: !reset []
+  milvus:
+    depends_on:
+      storage: {condition: service_healthy}
+  api:
+    environment:
+      STORAGE_LOCAL_TEST_FIXTURE: "true"
+      MODEL_BASE_URL: https://model-fixture:8000/v1
+      MODEL_CA_FILE: /etc/yugitalk/model-ca.pem
+    volumes:
+      - ./${PROD_DATA_ROOT}/fixture-tls/fullchain.pem:/etc/yugitalk/model-ca.pem:ro
+  worker:
+    environment:
+      STORAGE_LOCAL_TEST_FIXTURE: "true"
+      MODEL_BASE_URL: https://model-fixture:8000/v1
+      MODEL_CA_FILE: /etc/yugitalk/model-ca.pem
+    volumes:
+      - ./${PROD_DATA_ROOT}/fixture-tls/fullchain.pem:/etc/yugitalk/model-ca.pem:ro
+  model-fixture:
+    image: yugitalk-backend:0.2.0
+    user: "101:101"
+    command: [python, -m, uvicorn, fixture:app, --host, 0.0.0.0, --port, "8000", --ssl-certfile, /tls/fullchain.pem, --ssl-keyfile, /tls/privkey.pem]
+    volumes:
+      - ./scripts/stage6-model-fixture.py:/app/fixture.py:ro
+      - ./${PROD_DATA_ROOT}/fixture-tls:/tls:ro
+    read_only: true
+    tmpfs: [/tmp]
+    mem_limit: 256m
+  scheduler:
+    environment:
+      STORAGE_LOCAL_TEST_FIXTURE: "true"
+  migrate:
+    environment:
+      STORAGE_LOCAL_TEST_FIXTURE: "true"

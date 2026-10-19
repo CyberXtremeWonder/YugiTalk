@@ -1,0 +1,22 @@
+# 叠加阶段 2 的隔离应用配置；独立队列避免开发 Worker 误消费验收任务。
+services:
+  api:
+    environment:
+      TASK_QUEUE: ${STAGE3_TASK_QUEUE:?验收脚本生成}
+      CUMULATIVE_BUDGET_ENABLED: true
+      TASK_BUDGET_ENABLED: true
+      MODEL_PROVIDER: mock
+      MODEL_ID: mock-v1
+  worker:
+    extends:
+      file: docker-compose.stage2-test.yml
+      service: api
+    command: ["python", "start.py", "--mode", "worker"]
+    environment:
+      TASK_QUEUE: ${STAGE3_TASK_QUEUE:?验收脚本生成}
+      CUMULATIVE_BUDGET_ENABLED: true
+      TASK_BUDGET_ENABLED: true
+      MODEL_PROVIDER: mock
+      MODEL_ID: mock-v1
+    healthcheck:
+      disable: true

@@ -1,0 +1,13 @@
+# 抓取地址只使用内部网络；认证文件由部署初始化写入项目私有目录。
+global:
+  scrape_interval: 15s
+scrape_configs:
+  - job_name: yugitalk-api
+    metrics_path: /internal/metrics
+    authorization:
+      type: Bearer
+      credentials_file: /etc/yugitalk/metrics-token
+    static_configs:
+      - targets: [api:8000]
+rule_files:
+  - /etc/yugitalk/alerts.yaml

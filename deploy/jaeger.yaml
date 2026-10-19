@@ -1,0 +1,36 @@
+# 单机追踪写入项目绑定目录，保留十四天，不公开 OTLP 与查询端口。
+service:
+  extensions: [jaeger_storage, jaeger_query, healthcheckv2]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [jaeger_storage_exporter]
+extensions:
+  healthcheckv2:
+    use_v2: true
+    http:
+      endpoint: 0.0.0.0:13133
+  jaeger_query:
+    storage:
+      traces: local_store
+  jaeger_storage:
+    backends:
+      local_store:
+        badger:
+          directories:
+            keys: /data/keys
+            values: /data/values
+          ephemeral: false
+          ttl:
+            spans: 336h
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+processors:
+  batch:
+exporters:
+  jaeger_storage_exporter:
+    trace_storage: local_store

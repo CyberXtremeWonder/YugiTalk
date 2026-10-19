@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>YugiTalk · 智能工作空间</title><link rel="stylesheet" href="./workbench.css">
+</head>
+<body>
+  <a class="skip-link" href="#prompt">跳到任务输入</a>
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar">
+      <a class="brand" href="#chat" aria-label="YugiTalk 首页"><span class="brand-mark" aria-hidden="true">Y↗</span>yugitalk<span class="brand-dot">.</span></a>
+      <button class="new-chat" id="new-chat"><span aria-hidden="true">＋</span> 新建对话</button>
+      <nav id="navigation" aria-label="主要导航">
+        <button data-view="chat" aria-current="page"><span class="nav-icon purple" aria-hidden="true">◉</span>对话空间</button>
+        <button data-view="agents"><span class="nav-icon orange" aria-hidden="true">✳</span>Agent</button>
+        <button data-view="knowledge"><span class="nav-icon green" aria-hidden="true">▤</span>知识库</button>
+        <button data-view="tasks"><span class="nav-icon blue" aria-hidden="true">✓</span>任务记录</button>
+      </nav>
+      <section class="history" aria-labelledby="history-title"><h2 id="history-title">最近对话</h2><p>从一个新的想法开始。</p></section>
+      <div class="sidebar-bottom">
+        <button class="sidebar-option" id="panel" aria-expanded="false" aria-controls="inspector"><span aria-hidden="true">☷</span><span id="panel-label">展开详情</span></button>
+        <button class="sidebar-option" id="theme" aria-label="切换到深色主题"><span aria-hidden="true">◐</span><span id="theme-label">深色主题</span></button>
+        <button class="sidebar-option" data-view="settings"><span aria-hidden="true">⚙</span>设置</button>
+        <div class="profile"><span class="avatar">Y</span><div><strong>个人工作空间</strong><span>你的知识与行动，在这里连接</span></div></div>
+      </div>
+    </aside>
+    <main class="main-panel" id="main-panel">
+      <header class="topbar"><div class="header-title"><button id="menu" class="menu-button" aria-expanded="false" aria-controls="navigation">导航 <span aria-hidden="true">☰</span></button><a class="mobile-brand" href="#chat" aria-label="YugiTalk 手机首页">yugitalk<span class="brand-dot">.</span></a><span id="page-title">对话空间</span><span class="model-label">通用助手</span></div><span class="preview-badge">设计预览</span></header>
+      <section class="chat-view" id="chat-view" aria-labelledby="heading">
+        <div class="welcome"><span class="assistant-symbol" aria-hidden="true"><svg viewBox="0 0 100 100"><path d="M23 82V43a27 27 0 0 1 54 0v39q0 7-6 2l-7-6-9 9q-5 5-10 0l-9-9-7 6q-6 5-6-2Z"/><circle cx="41" cy="48" r="5"/><circle cx="61" cy="48" r="5"/></svg></span><h1 id="heading">今天，一起完成什么？</h1><p>一个问题，一个想法，或一项复杂任务。</p></div>
+        <div class="composer"><label class="sr-only" for="prompt">任务输入</label><textarea id="prompt" placeholder="把你的想法交给 YugiTalk…"></textarea><div class="composer-bottom"><span class="input-context"><span class="context-dot" aria-hidden="true"></span>通用助手 <span class="context-divider">/</span> 知识与工具</span><button class="send" disabled aria-label="发送任务，草图中暂不可用"><span aria-hidden="true">↑</span></button></div></div>
+        <div class="quick-actions" aria-label="任务灵感">
+          <button data-prompt="检索我的项目资料，整理关键结论。"><span class="quick-icon purple" aria-hidden="true">▤</span>知识检索</button>
+          <button data-prompt="帮我选择合适的工具完成任务。"><span class="quick-icon green" aria-hidden="true">⚒</span>工具调用</button>
+          <button data-prompt="帮我把这个想法拆解成执行计划。"><span class="quick-icon orange" aria-hidden="true">✳</span>任务计划</button>
+          <button data-prompt="整理我的工作偏好，并等待我确认保存。"><span class="quick-icon yellow" aria-hidden="true">◆</span>偏好记忆</button>
+          <button data-prompt="根据提供的资料，生成一份结构清晰的报告。"><span class="quick-icon blue" aria-hidden="true">✓</span>报告生成</button>
+        </div>
+        <p class="input-hint">重要操作由你确认，资料来源随结果呈现。</p>
+      </section>
+      <section class="secondary-view" id="secondary-view" hidden aria-labelledby="view-title"><span class="view-symbol" id="view-symbol" aria-hidden="true">✳</span><h1 id="view-title">Agent</h1><p id="view-description"></p><div class="empty-state"><span id="empty-title"></span><p id="empty-description"></p></div></section>
+      <footer class="status-footer"><span>YUGITALK / YOUR IDEAS, IN ACTION.</span><span>静态草图 · 尚未连接模型</span></footer>
+    </main>
+    <button class="drawer-backdrop" id="backdrop" aria-label="关闭任务详情遮罩" hidden tabindex="-1"></button>
+    <aside class="inspector" id="inspector" aria-label="任务详情示例" tabindex="-1" hidden>
+      <div class="inspector-header"><span>任务详情</span><button id="close-panel" class="close-button" aria-label="关闭任务详情">×</button></div><h2>每一步，都清晰。</h2><p class="inspector-intro">示例执行路径</p>
+      <ol class="track"><li><span>01</span><div><strong>理解目标</strong><p>整理需求与可用资料</p></div></li><li><span>02</span><div><strong>执行任务</strong><p>调用授权工具，记录过程</p></div></li><li><span>03</span><div><strong>核验结果</strong><p>保留来源与确认记录</p></div></li></ol>
+      <div class="source-block"><span>引用资料</span><a href="../../AGENT_REQUIREMENTS.md">项目需求文档 <span aria-hidden="true">↗</span></a><p>查看原始资料，核验回答依据。</p></div><div class="run-info"><span>模型与费用</span><span>尚未连接</span></div>
+    </aside>
+  </div>
+  <script src="./workbench.js"></script>
+</body>
+</html>

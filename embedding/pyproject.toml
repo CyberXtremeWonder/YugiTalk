@@ -1,0 +1,13 @@
+[project]
+name = "yugitalk-embedding"
+version = "0.1.0"
+requires-python = ">=3.12,<3.13"
+dependencies = ["fastapi==0.143.0", "uvicorn==0.54.0", "sentence-transformers==5.6.1", "transformers==4.57.6", "torch==2.8.0+cpu"]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
