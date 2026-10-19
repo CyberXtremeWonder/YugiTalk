@@ -215,12 +215,5 @@ npm.cmd --prefix frontend run build
 
 不要用 `git add -f` 加入私有文件。提交前检查暂存内容；文档、日志、截图、模板也可能包含凭证。密钥一旦泄露，应在供应商控制台撤销并重新生成。
 
-## 更多文档
-
-- [完整需求](AGENT_REQUIREMENTS.md)、[项目说明书](docs/PROJECT_MANUAL.md)、[架构](docs/ARCHITECTURE.md)、[API](docs/API.md)
-- [七步增强 RAG](docs/ENHANCED_RAG.md)、[知识图谱](docs/KNOWLEDGE_GRAPH.md)、[自定义 Skill](docs/CUSTOM_SKILLS.md)
-- [工具管理](docs/TOOL_MANAGEMENT.md)、[注册与工具审核](docs/REGISTRATION_AND_TOOL_REVIEW.md)、[用户归属](docs/USER_OWNERSHIP.md)
-- [数据与迁移](docs/PROJECT_DATA.md)、[生产部署](docs/DEPLOYMENT.md)、[首次部署](docs/FIRST_DEPLOYMENT.md)
-- [腾讯云 HTTPS 网关](docs/TENCENT_GATEWAY.md)、[排障](docs/RUNBOOK.md)、[安全记录](docs/SECURITY_REVIEW.md)
 
 运行截图、验证产物及大型评测输出默认不上传；历史报告中指向这些产物的链接需在本机运行对应验证后查看。

@@ -260,3 +260,4 @@ credentials.json
 secrets.json
 !/.env.example
 !/.env.production.example
+/docs/
