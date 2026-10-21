@@ -168,6 +168,7 @@ def freeze_tools(
     if member is None:
         raise HTTPException(404)
     pins = {}
+    # 助手声明的工具是许可上限；实际冻结时再与当前角色、启停和服务就绪状态取交集。
     for name in names:
         item = descriptor(db, workspace, name)
         if item and item["enabled"] and member.role in item["required_roles"]:
@@ -197,6 +198,7 @@ def bound_tool(
     if row is not None and not row.enabled:
         raise ProviderFailure("tool_unavailable")
     pins = snapshot.get("tool_catalog")
+    # 快照存在目录但缺少此工具时就是未授权；只有没有目录的旧任务走兼容判断。
     pin = pins.get(name) if isinstance(pins, dict) else None
     if isinstance(pins, dict) and not isinstance(pin, dict):
         raise ProviderFailure("tool_not_authorized")
@@ -217,6 +219,7 @@ def bound_tool(
     if not isinstance(pin, dict) or not row or row.id != pin.get("id") or row.deleted:
         raise ProviderFailure("tool_unavailable")
     version = db.get(ToolVersion, pin.get("version_id"))
+    # 自定义工具绑定具体历史版本，重算内容指纹并核对 Schema，禁止恢复时偷换端点或参数。
     if (
         not version
         or version.tool_id != row.id

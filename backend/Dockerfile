@@ -2,7 +2,9 @@ FROM python:3.12.14-slim-trixie@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f82
 WORKDIR /build
 COPY requirements.runtime.txt .
 # 构建环境安装锁定依赖，运行镜像只接收隔离虚拟环境。
-RUN python -m venv /opt/venv && /opt/venv/bin/pip install --no-cache-dir -r requirements.runtime.txt
+# 下载缓存跨构建保留，中断重试时复用已下载内容；缓存不进入最终镜像。
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python -m venv /opt/venv && /opt/venv/bin/pip install -r requirements.runtime.txt
 
 FROM python:3.12.14-slim-trixie@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f
 LABEL io.yugitalk.project="yugitalk" io.yugitalk.component="backend"

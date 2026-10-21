@@ -1,6 +1,11 @@
 /** 将公开任务错误码转换为中文提示，不展示供应商原始错误内容。 */
 export function runError(code: string): string {
   const messages: Record<string, string> = {
+    event_limit:
+      "任务事件达到上限，输出已中断并保留部分内容，请缩小问题范围后重试。",
+    model_repetition:
+      "检测到模型连续重复输出，已停止生成并保留部分内容，请缩小问题范围后重试。",
+    invalid_citation: "回答包含无法核验的来源引用，任务已停止，请重试。",
     agent_incomplete:
       "检查后仍未满足任务要求，请根据缺口补充信息或缩小任务范围。",
     agent_control_invalid: "模型未返回有效的计划或检查结果，请重新发送。",

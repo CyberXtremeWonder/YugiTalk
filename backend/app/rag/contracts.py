@@ -35,7 +35,7 @@ class EvidenceGrade(BaseModel):
     relevance: Literal["none", "weak", "strong"]
     answerability: Literal["none", "partial", "sufficient"]
     ambiguity: Literal["none", "missing_slot", "multiple_candidates"]
-    route: Literal["answer", "rewrite", "clarify", "no_knowledge"]
+    route: Literal["answer", "partial_answer", "rewrite", "clarify", "no_knowledge"]
     hitl_prompt: str = Field(default="", max_length=240)
     hitl_options: list[str] = Field(default_factory=list, max_length=4)
 
@@ -47,6 +47,12 @@ class EvidenceGrade(BaseModel):
             or self.answerability != "sufficient"
             or self.ambiguity != "none"
         ):
+            raise ValueError("rag_grade_invalid")
+        if self.route == "partial_answer" and (
+            self.relevance != "strong" or self.answerability != "partial"
+            or self.ambiguity != "none"
+        ):
+            # “部分支持”仍要求真实相关性；不能借此放行无关证据或尚未澄清的问题。
             raise ValueError("rag_grade_invalid")
         if any(not option.strip() or len(option) > 120 for option in self.hitl_options):
             raise ValueError("rag_grade_invalid")

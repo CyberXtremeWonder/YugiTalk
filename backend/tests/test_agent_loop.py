@@ -157,6 +157,15 @@ def test_execution_publishes_only_final_answer_once(client, failed):
     from app.tasks.execution import Execution
 
     _, body, task, _ = setup_task(client, closed_loop=True, token_budget=100000)
+    # 旧任务继续走单 Agent 检查点；新 Router 的子助手闭环另有委派回归。
+    from sqlalchemy.orm import Session
+
+    from app.tasks.models import Run
+
+    with Session(client.app.state.database) as db:
+        row = db.get(Run, task["id"])
+        row.snapshot = {**row.snapshot, "router_mode": False}
+        db.commit()
     script = (
         [PLAN, "不应公开的草稿", review("unable")]
         if failed

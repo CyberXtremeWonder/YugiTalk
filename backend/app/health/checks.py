@@ -72,4 +72,5 @@ class DependencyChecker:
             "milvus": self.milvus,
         }
         results = await asyncio.gather(*(self._safe_check(probe) for probe in probes.values()))
+        # 单个依赖异常被转换为 False，其余探测仍完成；结果顺序与 probes 插入顺序一致。
         return dict(zip(probes, results, strict=True))

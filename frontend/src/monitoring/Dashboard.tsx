@@ -28,6 +28,7 @@ function Trend({
   unit?: string;
 }) {
   const peak = Math.max(...values, 1);
+  // 将等间隔分钟样本映射到 SVG 坐标；峰值至少为 1，零流量时避免除零。
   const points = values
     .map(
       (value, index) =>
@@ -183,6 +184,7 @@ export function Dashboard() {
     }
     setBusy(false);
     if (!paused || lastRefresh.current !== refresh) void load();
+    // 暂停只关闭自动刷新；手动刷新计数变化仍允许单次请求。
     lastRefresh.current = refresh;
     document.addEventListener("visibilitychange", visibility);
     return () => {

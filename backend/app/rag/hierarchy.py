@@ -12,6 +12,7 @@ def join_overlaps(texts: list[str]) -> str:
     """消除解析器产生的相邻重叠部分；无重叠时保留分段边界。"""
     result = texts[0] if texts else ""
     for text in texts[1:]:
+        # 从最长重叠向下寻找前块尾部与后块开头的公共部分，仅去掉真实重复的文字。
         overlap = next(
             (
                 size
@@ -28,6 +29,7 @@ def attach_parents(db: Session, document: str, version: int, parts: list[dict[st
     """写入确定性父级身份，并给每个叶子标注经过校验的父级关系。"""
     groups: list[list[dict[str, Any]]] = []
     for part in parts:
+        # 父块最多包含三个叶子，且不能跨页或跨 Markdown 章节。
         if (
             not groups
             or len(groups[-1]) == 3

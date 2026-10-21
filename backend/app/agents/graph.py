@@ -8,7 +8,9 @@ from typing import Any, NotRequired, TypedDict, cast
 from langgraph.graph import END, START, StateGraph
 from pydantic import ValidationError
 
+from app.agents.answer_policy import answer_instruction, evidence_policy, validate_references
 from app.agents.contracts import AgentConfig
+from app.agents.streaming import TextStream
 from app.core.config import Settings
 from app.guardrails.prompts import protect_messages
 from app.observability.telemetry import operation_span
@@ -53,6 +55,7 @@ def run_graph(
     """两个节点形成有界循环；数据库负责取消、权限、事件和预算事实。"""
 
     if config.closed_loop and _control is None:
+        # 闭环模式在普通模型/工具循环外增加规划与检查；内部调用用 _control 避免再次套入。
         from app.agents.loop import run_closed_loop
 
         return run_closed_loop(
@@ -78,9 +81,33 @@ def run_graph(
             raise ProviderFailure("context_limit")
         charge = (context_size + config.max_output_tokens + 2048) * (retries + 1)
         update("tool_status", {"stage": "model", "step": state["step"] + 1}, charge)
+        # Provider 在请求期间也可调用 guard，及时发现取消、租约丢失或权限变化。
         provider.guard = lambda: update(None, None, 0)
         reply: Reply | None = None
         step_text = ""
+        # 规划、检查等控制调用必须遵循其 JSON 契约，回答约束仅作用于正文生成。
+        policy = evidence_policy(state["messages"]) if _control in {None, "execute"} else None
+        output_limit = min(config.max_output_tokens, 1024) if (
+            policy and policy["coverage"] != "sufficient"
+        ) else config.max_output_tokens
+        # 约束在每轮请求前重算，工具返回空证据后不会沿用先前的引用要求。
+        request_messages = [
+            {key: value for key, value in message.items() if key != "rag_evidence"}
+            for message in state["messages"]
+        ]
+        if policy:
+            request_messages[0] = {
+                **request_messages[0],
+                "content": request_messages[0]["content"] + "\n" + answer_instruction(policy),
+            }
+
+        def publish(text: str) -> None:
+            """事件与最终正文使用同一批文字，防止缓冲后显示和落库内容不一致。"""
+            if not config.closed_loop:
+                update("text_delta", {"text": text}, 0)
+                on_text(text)
+
+        stream = TextStream(publish)
         with operation_span("model.generate"), trace_step(
             "loop", "模型循环", iteration=state["step"] + 1
         ):
@@ -90,28 +117,35 @@ def run_graph(
                     provider=getattr(provider, "provider", settings.model_provider),
                 )
             ) as request_step:
-                for event in provider.stream(
-                    state["messages"], list(config.tools), config.max_output_tokens
-                ):
-                    if event.kind == "text":
-                        if (
-                            not isinstance(event.text, str)
-                            or len((state["text"] + step_text + event.text).encode()) > 65536
-                        ):
-                            raise ProviderFailure("model_response_too_large")
-                        if not config.closed_loop:
-                            update("text_delta", {"text": event.text}, 0)
-                            on_text(event.text)
-                        step_text += event.text
-                    else:
-                        reply = event.reply
-                        update(None, None, 0)
-                if reply is not None and not isinstance(provider, HTTPProvider):
-                    request_step.usage(reply)
+                try:
+                    for event in provider.stream(
+                        request_messages, list(config.tools), output_limit
+                    ):
+                        if event.kind == "text":
+                            # 普通模式边生成边发布；闭环模式先积累候选文本，检查后再公开。
+                            if (
+                                not isinstance(event.text, str)
+                                or len((state["text"] + step_text + event.text).encode()) > 65536
+                            ):
+                                raise ProviderFailure("model_response_too_large")
+                            stream.add(event.text)
+                            step_text += event.text
+                        else:
+                            # 最终 Reply 带回工具调用和用量，文本则已在前面的增量事件中收集。
+                            reply = event.reply
+                            update(None, None, 0)
+                    if reply is not None and not isinstance(provider, HTTPProvider):
+                        request_step.usage(reply)
+                finally:
+                    # 包括超时和输出截断在内的异常，也要交付最后一批已接收文字。
+                    stream.flush()
+        if policy:
+            validate_references(step_text, policy)
         if reply is None:
             raise ProviderFailure("model_protocol")
         if not reply.calls and not step_text.strip():
             raise ProviderFailure("model_empty_result")
+        # 将模型提出的工具调用写入 assistant 消息，后续 tool 消息通过调用 ID 与它配对。
         calls = [
             {
                 "id": call.id,
@@ -126,11 +160,15 @@ def run_graph(
         message: dict[str, Any] = {"role": "assistant", "content": step_text}
         if calls:
             message["tool_calls"] = calls
+        # 闭环只保留不再调用工具时的候选答复；普通模式累计各轮已公开的文本。
+        if config.closed_loop:
+            answer_text = step_text if not reply.calls else ""
+        else:
+            answer_text = state["text"] + step_text
         result: AgentState = {
             **state,
             "step": state["step"] + 1,
-            "text": (step_text if not reply.calls else "")
-            if config.closed_loop else state["text"] + step_text,
+            "text": answer_text,
             "messages": [*state["messages"], message],
             "calls": reply.calls,
             "tool_cursor": 0,
@@ -153,6 +191,7 @@ def run_graph(
             "repetitions": dict(state["repetitions"]),
         }
         for cursor, call in enumerate(state["calls"]):
+            # 恢复时跳过已写入图检查点的工具；未完成的调用仍需再次校验当前权限。
             if cursor < state["tool_cursor"]:
                 continue
             update(None, None, 0)
@@ -160,6 +199,7 @@ def run_graph(
                 raise ProviderFailure("tool_not_authorized")
             if result_state["tool_count"] + 1 > min(config.max_tool_calls, settings.max_tool_calls):
                 raise ProviderFailure("tool_call_limit")
+            # 同一工具配同一参数累计最多调用两次，避免模型反复尝试同一操作而陷入循环。
             fingerprint = json.dumps(
                 {"name": call.name, "arguments": call.arguments}, sort_keys=True, ensure_ascii=False
             )
@@ -196,6 +236,7 @@ def run_graph(
                     0,
                 )
             except (ValueError, ValidationError):
+                # 参数错误作为工具结果交还模型，让下一轮有机会修正，而不是立刻终止任务。
                 result = {"error": "tool_arguments_invalid", "hint": "请按工具 Schema 修正参数"}
                 update(
                     "tool_status",
@@ -207,6 +248,7 @@ def run_graph(
                     },
                     0,
                 )
+            # 工具结果回填上下文，下一轮模型才能根据真实执行结果继续回答。
             result_state["messages"].append(
                 {
                     "role": "tool",
@@ -221,6 +263,8 @@ def run_graph(
                 save(result_state, "tools" if cursor + 1 < len(state["calls"]) else "model")
         return result_state
 
+    # 路径为 model → tools → model；模型不再提出工具调用时结束。
+    # 恢复入口可直接指向 tools，以继续已保存但尚未执行完的一批调用。
     graph = StateGraph(AgentState)
     graph.add_node("model", model)
     graph.add_node("tools", tools)
@@ -239,7 +283,16 @@ def run_graph(
         "tool_cursor": 0,
     }
     state = resume or state
-    state = {**state, "messages": protect_messages(state["messages"])}
+    # 固定角色指令在恢复时重新附加，避免旧系统消息反复降级后膨胀上下文。
+    from app.guardrails.prompts import SYSTEM_POLICY
+
+    messages = [
+        {**message, "content": SYSTEM_POLICY}
+        if _control_prompt and message.get("role") == "system"
+        and message.get("content") == SYSTEM_POLICY + "\n" + _control_prompt else message
+        for message in state["messages"]
+    ]
+    state = {**state, "messages": protect_messages(messages)}
     if _control_prompt:
         state["messages"][0]["content"] += "\n" + _control_prompt
     if node == "done":

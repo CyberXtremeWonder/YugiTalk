@@ -98,6 +98,7 @@ def issue_code(request: Request, db: Session, email: str) -> None:
         "delivered": False,
     }
     old = db.get(EmailVerification, email)
+    # 用条件更新争抢本次发送资格；并发请求只有一个能越过 60 秒重发窗口。
     if old:
         changed = db.execute(
             update(EmailVerification)
@@ -118,6 +119,7 @@ def issue_code(request: Request, db: Session, email: str) -> None:
     except IntegrityError as error:
         db.rollback()
         raise HTTPException(429, headers={"Retry-After": "60"}) from error
+    # 先持久化未送达状态，再调用 SMTP；只有发送成功的验证码才能用于注册。
     try:
         request.app.state.send_verification_code(settings, email, code)
     except Exception as error:
@@ -151,6 +153,7 @@ def register_user(request: Request, db: Session, data: RegisterInput) -> None:
         and hmac.compare_digest(challenge.code_hash, code_digest(settings, data.email, data.code))
     )
     if not valid:
+        # 错误尝试单独提交，不能随本次注册失败回滚，否则可无限猜测验证码。
         db.execute(
             update(EmailVerification)
             .where(
@@ -163,6 +166,7 @@ def register_user(request: Request, db: Session, data: RegisterInput) -> None:
         db.commit()
         raise HTTPException(422, detail={"code": "verification_code_invalid"})
     assert challenge is not None
+    # 读取时通过校验不代表仍可使用：再次条件更新，保证验证码只能被一次注册消费。
     changed = db.execute(
         update(EmailVerification)
         .where(
@@ -180,6 +184,7 @@ def register_user(request: Request, db: Session, data: RegisterInput) -> None:
         db.rollback()
         raise HTTPException(422, detail={"code": "verification_code_invalid"})
     user = User(
+        # 消费验证码与创建账号属于同一事务；创建失败时不会留下已消费但无账号的状态。
         email=data.email,
         name=data.name,
         password_hash=hasher.hash(data.password),

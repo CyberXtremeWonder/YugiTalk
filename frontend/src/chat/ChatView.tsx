@@ -1,5 +1,4 @@
 import { Sources } from "../rag/Sources";
-import type { KnowledgeBase } from "../rag/api";
 import { Fragment, useEffect, useRef, useState } from "react";
 import { SafeMarkdown } from "./SafeMarkdown";
 import { withoutSourceLabels } from "../rag/presentation";
@@ -34,16 +33,14 @@ export function ChatView({
   const input = useRef<HTMLTextAreaElement>(null);
   const controller = useRef<AbortController | null>(null);
   const alive = useRef(true);
+  // 保留尚未确认成功的提交内容和幂等键；网络失败后重发时，服务端可返回同一个任务。
   const pending = useRef<{
     key: string;
     conversation: string;
     version: string;
     message: string;
-    base: string;
     skill: string;
   } | null>(null);
-  const [bases, setBases] = useState<KnowledgeBase[]>([]);
-  const [base, setBase] = useState("");
   const [skills, setSkills] = useState<Skill[]>([]);
   const [skill, setSkill] = useState("");
   const [agents, setAgents] = useState<Agent[]>([]);
@@ -80,11 +77,13 @@ export function ChatView({
   }
   /** 监听任务公开事件并更新文本、流程及完成状态。 */
   async function watch(task: Run, id: string) {
+    // 一个页面只读取一个任务的事件。停止旧读取不会取消服务端的后台执行。
     controller.current?.abort();
     const reader = new AbortController();
     controller.current = reader;
     setRun(task);
     setBusy(true);
+    // 历史回复以任务 ID 作为消息 ID；重放事件前移除它，避免与临时 answer 显示两份。
     setMessages((previous) =>
       previous.filter((message) => message.id !== task.id),
     );
@@ -95,6 +94,8 @@ export function ChatView({
       await readEvents(task, reader.signal, (event) => {
         if (!alive.current) return;
         recordStep(event);
+        // 恢复检查点时覆盖临时文本，平常收到 text_delta 时才追加。
+        // 中断前显示过的片段未必已进入检查点，直接追加会造成重复回复。
         if (event.type === "checkpoint_restored") {
           setAnswer(event.payload.text || "");
           setError("");
@@ -120,6 +121,8 @@ export function ChatView({
           setError(runError(event.payload.error_code || "执行失败"));
       });
       if (reader.signal.aborted || !alive.current) return;
+      // 事件读取结束后，以服务端任务状态和持久化消息为准，再清空临时流式文本。
+      // 结束也可能代表失败、取消或等待补充信息，不一定是成功。
       const result = await identityRequest<Run>(`/runs/${task.id}`);
       await history(id);
       setRun(result);
@@ -153,13 +156,6 @@ export function ChatView({
       })
       .catch((failure) => {
         if (alive.current) setError(failure.message);
-      });
-    void allItems<KnowledgeBase>(`/me/knowledge-bases`)
-      .then((rows) => {
-        if (alive.current) setBases(rows);
-      })
-      .catch(() => {
-        /* 知识库加载失败不影响普通对话。 */
       });
     void allItems<Skill>(`/me/skills`)
       .then((rows) => {
@@ -228,6 +224,7 @@ export function ChatView({
     if (busy || !value.trim() || (!version && run?.status !== "waiting_input"))
       return;
     if (run?.status === "waiting_input") {
+      // 知识检索需要澄清时，输入用于恢复原任务；state_version 防止回答过期的问题。
       setBusy(true);
       setError("");
       try {
@@ -265,6 +262,7 @@ export function ChatView({
     setSteps([]);
     setError("");
     try {
+      // 首次发送先创建会话，再把消息提交为后台任务；重发优先使用上次创建的会话。
       let id = pending.current?.conversation || conversationId;
       if (!id)
         id = (
@@ -280,7 +278,6 @@ export function ChatView({
         !pending.current ||
         pending.current.message !== value ||
         pending.current.version !== version ||
-        pending.current.base !== base ||
         pending.current.skill !== skill
       )
         pending.current = {
@@ -288,7 +285,6 @@ export function ChatView({
           conversation: id,
           version,
           message: value,
-          base,
           skill,
         };
       const request = pending.current;
@@ -299,7 +295,6 @@ export function ChatView({
           conversation_id: request.conversation,
           agent_version_id: request.version,
           message: request.message,
-          knowledge_base_id: request.base || null,
           skill_version_id: request.skill || null,
         },
         identity.csrf_token,
@@ -308,6 +303,7 @@ export function ChatView({
       pending.current = null;
       onChange("");
       if (conversationId !== request.conversation) {
+        // 切换到新会话后由组件加载逻辑接管 watch，当前实例不再另开一次读取。
         onConversation(request.conversation);
         return;
       }
@@ -484,22 +480,6 @@ export function ChatView({
                       {row.name} · v{row.number}
                     </option>
                   ))}
-              </select>
-            </label>
-            <label className="knowledge-context">
-              <span className="sr-only">对话知识库</span>
-              <select
-                aria-label="对话知识库"
-                value={base}
-                onChange={(event) => setBase(event.target.value)}
-                disabled={busy}
-              >
-                <option value="">普通对话</option>
-                {bases.map((row) => (
-                  <option key={row.id} value={row.id}>
-                    {row.name}
-                  </option>
-                ))}
               </select>
             </label>
             <label className="input-context">

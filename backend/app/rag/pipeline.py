@@ -112,6 +112,7 @@ class RagPipeline:
             }
         )
         deadline = time.monotonic() + self.settings.rag_timeout_seconds
+        # 所有检索/模型分支共用一次执行的截止时间，不能每走一步就重置完整超时额度。
 
         def guard() -> None:
             """复核任务租约、取消、权限和保守额度。"""
@@ -129,6 +130,7 @@ class RagPipeline:
                 ) as phase_step:
                     if phase == "plan":
                         plan = local_plan(state["question"])
+                        # 简单问题直接检索；复杂问题且配置了快速模型时，才额外请求模型拆题。
                         if (
                             plan.complexity == "complex"
                             and self.settings.rag_fast_model
@@ -158,6 +160,7 @@ class RagPipeline:
                         guard()
                         with Session(self.engine) as db:
                             current_scope = document_scope(
+                                # 外部召回期间文档可能更新，图谱只使用前后版本一致的授权文档。
                                 db, self.settings, self.workspace, self.user, self.base
                             )
                             graph_scope = {
@@ -187,6 +190,7 @@ class RagPipeline:
                         state["trace"].append({"stage": "rerank", "status": status})
                         self.update("tool_status", {"stage": "rag_rerank", "status": status}, 0)
                         state["sources"] = pack_evidence(
+                            # 重排后按优先级装入上下文预算，后面的评判与回答使用同一份证据包。
                             state["sources"], self.settings.rag_context_characters
                         )
                         state["phase"] = "grade"
@@ -214,6 +218,7 @@ class RagPipeline:
                         state["grade_count"] += 1
                         state["grade"] = grade.model_dump()
                         route = grade.route
+                        # 模型建议还要经过程序约束：无证据不能回答，有歧义优先澄清。
                         if not state["sources"] and route == "answer":
                             route = "rewrite"
                         elif grade.ambiguity != "none":
@@ -225,7 +230,16 @@ class RagPipeline:
                                 and grade.answerability == "sufficient"
                                 else "rewrite"
                             )
+                        # 强相关的部分证据已经可以支持有界回答，不再强制扩题、改写和清空来源。
+                        if (
+                            state["sources"]
+                            and grade.relevance == "strong"
+                            and grade.answerability == "partial"
+                            and grade.ambiguity == "none"
+                        ):
+                            route = "partial_answer"
                         if route == "rewrite" and (
+                            # 计数保存在检查点里，重启或补充信息也不能绕过一次改写、两次评判限制。
                             state["rewrite_count"] >= 1 or state["grade_count"] >= 2
                         ):
                             route = "no_knowledge"
@@ -248,6 +262,7 @@ class RagPipeline:
                         )
                         state["phase"] = {
                             "answer": "synthesis",
+                            "partial_answer": "synthesis",
                             "rewrite": "rewrite",
                             "clarify": "clarify",
                             "no_knowledge": "synthesis",
@@ -270,13 +285,14 @@ class RagPipeline:
                         )
                         state["rewrite_count"] += 1
                         state["queries"] = [rewrite.query]
+                        # 改写只替换检索词，原问题仍保留用于评判；假设答案不能成为真实证据。
                         state["trace"].append({"stage": "rewrite", "method": rewrite.method})
                         state["phase"] = "retrieve"
                     elif phase == "synthesis":
                         # 合成只输出证据包给现有流式回答节点；无证据和澄清耗尽由程序说明限制。
                         state["sources"] = (
                             pack_evidence(state["sources"], self.settings.rag_context_characters)
-                            if state["route"] == "answer"
+                            if state["route"] in {"answer", "partial_answer"}
                             else []
                         )
                         state["phase"] = "done"

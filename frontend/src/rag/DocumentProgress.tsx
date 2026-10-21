@@ -39,6 +39,7 @@ function stepState(doc: Document, key: string): StepState {
   if (failed && key === failedStage) return "failed";
   const total = progress.total_chunks || 0;
   if (key === "embedding" || key === "writing") {
+    // 编码和写入会交替发生，不能只看当前步骤的位置；各自以已完成块数判断是否结束。
     const count =
       (key === "embedding"
         ? progress.embedded_chunks
@@ -64,6 +65,7 @@ export function DocumentIndexProgress({ doc }: { doc: Document }) {
   const stage = progress.failed_stage || progress.stage || doc.status;
   const title = steps.find(([key]) => key === stage)?.[1] || "索引处理";
   const percent = total > 0 ? Math.floor((indexed / total) * 100) : null;
+  // 尚未解析出块总数时 progress 不设置 value，显示不确定进度，而不是伪造完成百分比。
   return (
     <div
       className="document-index-progress"

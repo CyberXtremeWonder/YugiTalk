@@ -46,6 +46,21 @@ test("断线以最后消费的事件游标续传", async () => {
   expect(events.map((event) => event.sequence)).toEqual([1, 2]);
 });
 
+test("过滤游标不进入页面，断线仍从过滤后的序号续传", async () => {
+  const fetch = vi
+    .fn()
+    .mockResolvedValueOnce(new Response(frame(1) + frame(3, "cursor")))
+    .mockResolvedValueOnce(new Response(frame(4, "completed")));
+  vi.stubGlobal("fetch", fetch);
+  const events: RunEvent[] = [];
+  await readEvents(run, new AbortController().signal, (event) =>
+    events.push(event),
+  );
+  expect(fetch.mock.calls[0][0]).toContain("types=text_delta,tool_status");
+  expect(fetch.mock.calls[1][1].headers).toEqual({ "Last-Event-ID": "run:3" });
+  expect(events.map((event) => event.sequence)).toEqual([1, 4]);
+});
+
 test("恢复任务重读旧终态后，继续消费新的检查点与终态", async () => {
   vi.stubGlobal(
     "fetch",

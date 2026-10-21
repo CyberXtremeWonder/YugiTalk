@@ -60,6 +60,7 @@ class ObjectStorage:
     def get(self, key: str) -> bytes:
         """读取指定对象的内容，交由调用方执行权限与大小检查。"""
         body = self.client.get_object(Bucket=self.bucket, Key=key)["Body"]
+        # 多读一个字节判断是否超限，且无论成功与否都关闭响应流，释放连接供后续读取。
         try:
             content: bytes = body.read(20 * 1024 * 1024 + 1)
         finally:

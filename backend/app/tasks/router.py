@@ -8,13 +8,14 @@ from datetime import UTC, timedelta
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi import APIRouter, Header, HTTPException, Query, Request
 from sqlalchemy import Engine, func, select
 from sqlalchemy.orm import Session
 from starlette.responses import StreamingResponse
 
 from app.accounts.access import AccountId, membership
 from app.agents.contracts import effective_config
+from app.agents.model_config import model_settings
 from app.agents.models import Agent, AgentVersion
 from app.audit.service import audit
 from app.chat.access import owned_conversation
@@ -24,6 +25,7 @@ from app.core.entities import now
 from app.core.pagination import Limit, page
 from app.identity.dependencies import DB, Actor, Writer, authenticated
 from app.identity.models import User
+from app.providers.client import ProviderFailure
 from app.tasks.access import ACTIVE, TERMINAL, owned_run, run_data
 from app.tasks.contracts import RunInput
 from app.tasks.execution import append_event
@@ -58,6 +60,7 @@ def create_run(
     fingerprint = hashlib.sha256(
         json.dumps(data.model_dump(mode="json"), sort_keys=True, ensure_ascii=False).encode()
     ).hexdigest()
+    # 幂等键识别同一次提交，内容哈希确认重发没有换参数；命中后不再保存消息或预留预算。
     previous = db.scalar(
         select(Run).where(Run.owner_id == actor.user.id, Run.idempotency_key == idempotency_key)
     )
@@ -74,6 +77,7 @@ def create_run(
         or agent.account_id != conversation.account_id
     ):
         raise HTTPException(404)
+    # 将已发布助手版本及本次选用的资源冻结为任务快照，后续编辑不会改变本次执行配置。
     config = effective_config(version.config)
     if data.skill_version_id:
         from app.skills.service import freeze_skill
@@ -86,6 +90,14 @@ def create_run(
         db, conversation.account_id, actor.user.id, config["tools"], settings
     )
     config["tools"] = list(config["tool_catalog"])
+    # 新对话由 Router 委派执行助手；显式指定知识库的旧客户端保留原路径。
+    config["router_mode"] = not bool(data.knowledge_base_id)
+    if config["router_mode"]:
+        from app.rag.contracts import freeze_rag_config
+        from app.rag.embeddings import Embeddings
+
+        config["rag_config"] = freeze_rag_config(settings)
+        config["rag_embedding_version"] = Embeddings(settings).version
     if data.knowledge_base_id:
         from app.rag.models import KnowledgeBase
 
@@ -99,12 +111,15 @@ def create_run(
         from app.rag.embeddings import Embeddings
 
         config["rag_embedding_version"] = Embeddings(settings).version
-    if config["provider"] != settings.model_provider or config["model"] != settings.model_id:
-        raise HTTPException(409, detail={"code": "model_configuration_changed"})
-    if settings.model_provider != "mock" and not (
-        settings.model_api_key.get_secret_value() and settings.model_base_url
+    try:
+        connection_settings = model_settings(settings, config)
+    except ProviderFailure as error:
+        raise HTTPException(409, detail={"code": str(error)}) from error
+    if connection_settings.model_provider != "mock" and not (
+        connection_settings.model_api_key.get_secret_value() and connection_settings.model_base_url
     ):
         raise HTTPException(503)
+    # 同一会话不能同时生成两轮回复；此外还要分别检查空间和用户的并发上限。
     active = select(Run).where(Run.status.in_(ACTIVE))
     if db.scalar(active.where(Run.conversation_id == key).limit(1)):
         raise HTTPException(409)
@@ -118,6 +133,8 @@ def create_run(
         )
         if count >= cap:
             raise HTTPException(429, detail={"code": "run_concurrency_exceeded"})
+    # 接受任务时先占用预算，结束时 finish_run 再释放预留并结算费用。
+    # 此处与消息、任务共用一个事务，任何校验失败都会一起回滚。
     reservation = int(str(config["token_budget"]))
     for budget_key, limit in (
         ("space:" + conversation.account_id, settings.workspace_token_budget),
@@ -133,6 +150,7 @@ def create_run(
         ):
             raise HTTPException(429, detail={"code": "run_budget_insufficient"})
         budget.reserved += reservation
+    # 用户消息先进入会话历史，Worker 的 build_messages 随后从这里组装模型上下文。
     sequence = (
         db.scalar(select(func.max(Message.sequence)).where(Message.conversation_id == key)) or 0
     ) + 1
@@ -153,6 +171,7 @@ def create_run(
     audit(db, actor.user, "run.create", run.account_id, run.id)
     db.commit()
     result = run_data(run)
+    # 必须先提交数据库再投递队列，否则 Worker 可能抢先读取到尚未提交的任务。
     try:
         request.app.state.dispatch_run(run.id)
     except Exception:
@@ -255,6 +274,7 @@ def poll_events(
             }
             for row in rows
         ]
+        # 即使任务已结束，也要把剩余事件读完；每批最多 100 条，可能需要多次轮询。
         return events, run.status in (*TERMINAL, "waiting_input") and (
             not rows or rows[-1].sequence == run.event_sequence
         )
@@ -267,11 +287,13 @@ def events(
     db: DB,
     actor: Actor,
     last_event_id: Annotated[str | None, Header()] = None,
+    types: Annotated[str | None, Query(max_length=240)] = None,
 ) -> StreamingResponse:
     """验证事件游标和保留期后建立可续传的公开事件流。"""
     key = str(run_id)
     run = owned_run(db, key, actor)
     last = 0
+    # 游标由任务 ID 和序号组成，既限制读取位置，也避免把另一任务的游标用到这里。
     if last_event_id:
         try:
             prefix, suffix = last_event_id.split(":")
@@ -281,18 +303,28 @@ def events(
         except ValueError:
             raise HTTPException(422) from None
     settings: Settings = request.app.state.settings
+    selected = set(types.split(",")) if types else None
+    allowed = {
+        "text_delta", "tool_status", "checkpoint_restored", "completed", "error", "clarification",
+    }
+    if selected is not None:
+        if not selected <= allowed:
+            raise HTTPException(422)
+        # 终态和恢复事件必须送达，订阅者不能过滤掉决定结束或替换正文的控制事件。
+        selected |= {"completed", "error", "clarification", "checkpoint_restored"}
     engine: Engine = request.app.state.database
     # 在发出响应头前校验过期游标；释放请求事务，避免 SSE 长时间占用连接池。
     db.rollback()
     poll_events(engine, request, key, last, settings)
 
     async def stream() -> AsyncIterator[str]:
-        """逐步产生公开文本和结构化回复，并在调用期间检查取消与执行边界。"""
+        """把数据库中的公开事件转为 SSE 帧，直到读完终态事件或客户端断开。"""
         nonlocal last
         text_received = False
         started = asyncio.get_running_loop().time()
         while not await request.is_disconnected():
             try:
+                # 同步数据库查询移到线程中；每次轮询独立开关 Session，不长期占用连接。
                 entries, done = await asyncio.to_thread(
                     poll_events, engine, request, key, last, settings
                 )
@@ -300,10 +332,18 @@ def events(
                 # 权限撤销或会话过期后关闭流，不继续发送任何任务内容。
                 return
             for item in entries:
+                # SSE 的 id 用于客户端续传，data 则携带类型、序号和公开业务内容。
                 last = int(str(item["sequence"]))
+                if selected is not None and item["type"] not in selected:
+                    continue
                 text_received = text_received or item["type"] == "text_delta"
                 encoded = json.dumps(item, ensure_ascii=False)
                 yield f"id: {key}:{last}\nevent: {item['type']}\ndata: {encoded}\n\n"
+            if entries and selected is not None and entries[-1]["type"] not in selected:
+                # 一批被过滤的事件只补一帧游标，既减少传输，也保证断线不会重扫旧事件。
+                yield f"id: {key}:{last}\nevent: cursor\ndata: " + json.dumps({
+                    "sequence": last, "type": "cursor", "payload": {},
+                }) + "\n\n"
             if done:
                 return
             yield ": heartbeat\n\n"
@@ -356,11 +396,10 @@ def retry(
         or run.attempts >= settings.run_max_attempts
     ):
         raise HTTPException(409)
-    if (
-        run.snapshot["provider"] != settings.model_provider
-        or run.snapshot["model"] != settings.model_id
-    ):
-        raise HTTPException(409, detail={"code": "model_configuration_changed"})
+    try:
+        model_settings(settings, run.snapshot)
+    except ProviderFailure as error:
+        raise HTTPException(409, detail={"code": str(error)}) from error
     active = select(Run).where(Run.status.in_(ACTIVE))
     if db.scalar(active.where(Run.conversation_id == run.conversation_id).limit(1)):
         raise HTTPException(409)

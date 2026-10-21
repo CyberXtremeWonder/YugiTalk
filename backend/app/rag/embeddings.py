@@ -20,6 +20,7 @@ class Embeddings:
         """保存实例所需的依赖与配置，初始化后续执行使用的状态。"""
         self.settings = settings
         profile = (
+            # 模型、修订版和维度决定向量语义；集合还包含结构版本，避免不兼容索引混用。
             f"{settings.embedding_provider}:{settings.embedding_model}:"
             f"{settings.embedding_revision}:{settings.embedding_dimension}:cosine"
         )
@@ -60,6 +61,7 @@ class Embeddings:
             )
             response.raise_for_status()
             rows = sorted(response.json()["data"], key=lambda row: row["index"])
+        # 服务端返回顺序不一定等于输入顺序，按 index 还原并拒绝缺项或重复项。
         if [row["index"] for row in rows] != list(range(len(texts))):
             raise ValueError("embedding_response_invalid")
         result = []
@@ -70,6 +72,7 @@ class Embeddings:
             ):
                 raise ValueError("embedding_dimension_mismatch")
             norm = math.sqrt(sum(v * v for v in vector))
+            # 统一归一化后使用余弦检索，零向量和非有限数不能成为有效索引。
             if not norm:
                 raise ValueError("embedding_zero_vector")
             result.append([float(v / norm) for v in vector])
@@ -135,6 +138,7 @@ async def bounded_post(
                 return result
 
             task = asyncio.create_task(read())
+            # 请求无数据到达时仍每半秒检查一次取消/权限；退出时清理尚未结束的网络任务。
             try:
                 while not task.done():
                     guard()
@@ -240,6 +244,7 @@ class VectorIndex:
                 ]["has"]:
                     raise
         description = self.request(
+            # 已存在也必须检查字段、维度与分词器，不能仅凭集合名称认为结构兼容。
             "collections/describe", {"collectionName": embeddings.collection}
         )["data"]
         fields = description.get("fields", [])
@@ -297,6 +302,7 @@ class VectorIndex:
         if not documents:
             return []
         versions = " or ".join(
+            # 每个文档绑定具体索引代数，旧任务留下的向量不会因文档 ID 相同而被召回。
             f"(document_id == {json.dumps(key)} and index_version == {version})"
             for key, version in documents.items()
         )

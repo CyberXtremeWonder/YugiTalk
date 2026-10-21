@@ -20,6 +20,7 @@ class JsonFormatter(logging.Formatter):
             "message": record.getMessage(),
         }
         for field in (
+            # extra 只输出允许的诊断字段，不能直接序列化整个 LogRecord 或异常对象。
             "request_id",
             "trace_id",
             "route",

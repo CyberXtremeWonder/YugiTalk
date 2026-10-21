@@ -27,6 +27,7 @@ def main() -> int:
         "--password-stdin", action="store_true", help="自动化从标准输入读取，勿使用命令行参数传密码"
     )
     args = parser.parse_args()
+    # 交互输入要求确认；自动化从标准输入取密码，避免凭证出现在进程命令行里。
     if args.password_stdin:
         password = sys.stdin.readline().rstrip("\r\n")
     else:
@@ -68,6 +69,7 @@ def main() -> int:
                 username=username,
             )
             db.add(user)
+            # 先生成用户 ID 再写审计，二者一起提交；已有账号在前面被拒绝，不覆盖其密码。
             db.flush()
             db.add(
                 AuditEvent(

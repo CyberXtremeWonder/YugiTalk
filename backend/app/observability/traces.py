@@ -68,6 +68,7 @@ def trace_step(
     with Session(engine) as db:
         parent_id = _parent.get()
         if kind == "tool" and iteration is not None:
+            # 工具节点运行时模型节点已退出，将工具挂回同一轮 loop，形成完整的模型/工具树。
             loop = db.scalar(
                 select(TraceStep)
                 .where(
@@ -98,6 +99,7 @@ def trace_step(
         )
         db.commit()
     parent_token = _parent.set(key)
+    # ContextVar 隔离并发执行的父步骤；退出后恢复旧值，让兄弟步骤不会误成父子关系。
     iteration_token = _iteration.set(iteration if iteration is not None else _iteration.get())
     current_token = _current.set(step)
     try:
@@ -137,6 +139,7 @@ def trace_step(
 def usage_summary(rows: list[TraceStep]) -> dict[str, int]:
     """累计所有真实模型请求，失败及缺用量请求计入未知数量。"""
     calls = [row for row in rows if row.kind == "llm"]
+    # 只累计实际模型请求节点，避免把外层 loop 的用量重复计算；缺失用量另计未知次数。
     return {
         "model_calls": len(calls),
         "input_tokens": sum(row.input_tokens or 0 for row in calls),

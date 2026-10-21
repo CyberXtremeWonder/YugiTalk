@@ -31,6 +31,7 @@ def serve(settings: Settings) -> None:
             try:
                 sweep(engine, settings, dispatch_run, dispatch_document)
                 sweep_graph(engine, settings)
+                # 仅成功扫描后更新心跳文件；部署探针可据修改时间判断调度器是否持续工作。
                 marker.parent.mkdir(parents=True, exist_ok=True)
                 marker.touch()
             except Exception:

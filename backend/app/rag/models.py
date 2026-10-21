@@ -36,6 +36,7 @@ class Document(Base):
     error_code: Mapped[str | None] = mapped_column(String(50), nullable=True)
     progress: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
     index_version: Mapped[int] = mapped_column(Integer, default=1)
+    # 索引代数隔离重试写入；嵌入版本决定向量语义，集合名还区分向量库结构版本。
     embedding_version: Mapped[str] = mapped_column(String(64))
     chunk_strategy: Mapped[str] = mapped_column(String(40), default="paragraph-700-overlap100-v1")
     collection_name: Mapped[str] = mapped_column(String(64))

@@ -29,6 +29,7 @@ def public_endpoint(value: str) -> str:
         raise ValueError("工具地址必须是无凭证和查询串的公共 HTTPS 地址，端口为 443")
     try:
         address = ipaddress.ip_address(host)
+        # URL 里直接写 IP 时校验其公网属性；域名这里只校验格式，运行时仍需做 DNS 检查。
     except ValueError:
         if len(host) > 253 or not re.fullmatch(
             r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+", host

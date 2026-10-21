@@ -64,6 +64,7 @@ export function KnowledgeView({
         );
         if (!active) return;
         setDocuments(rows);
+        // 上传结束不代表索引结束；仍有后台任务时继续轮询，全部稳定后停止。
         if (
           busy ||
           rows.some((row) =>
@@ -119,6 +120,7 @@ export function KnowledgeView({
         (batch, doc) => {
           setUploadBatch(batch);
           if (doc) {
+            // 上传去重可能返回已有文档 ID，先替换同 ID 条目再追加，避免列表出现两份。
             setBatchDocumentIds((ids) => [...new Set([...ids, doc.id])]);
             setDocuments((rows) => [
               ...rows.filter((row) => row.id !== doc.id),
@@ -165,6 +167,7 @@ export function KnowledgeView({
     }
   }
   const workflowDocuments = documents.filter(
+    // 流程区优先展示本次上传涉及的文档，普通列表隐藏已撤销资料，清理失败另行提供重试入口。
     (doc) =>
       ["queued", "parsing", "indexing", "failed"].includes(doc.status) &&
       (!batchDocumentIds.length || batchDocumentIds.includes(doc.id)),

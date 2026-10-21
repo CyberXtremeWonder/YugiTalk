@@ -73,6 +73,7 @@ def resolve_public(host: str, deadline: float) -> str:
     except OSError:
         raise ProviderFailure("tool_network_failed") from None
     addresses = list(dict.fromkeys(str(row[4][0]) for row in rows))
+    # 任一解析结果是私网就拒绝整个目标，避免多地址轮换把请求导向内部服务。
     if (
         not addresses
         or len(addresses) > 8
@@ -161,6 +162,7 @@ def _execute_http(
     assert endpoint.hostname
     guard()
     address = resolve_public(endpoint.hostname, deadline)
+    # 检查后的 IP 直接用于连接，不再次解析域名；TLS 仍验证原域名证书。
     guard()
     secret = secret_value(pin["config"], settings)
     if secret and (len(secret) > 4096 or "\r" in secret or "\n" in secret):
@@ -201,6 +203,7 @@ def _execute_http(
         connection.close()
 
     watchdog = threading.Timer(remaining, abort)
+    # 总截止时间用独立定时器守住，即使对方持续慢速发送响应头也不能无限续命。
     watchdog.daemon = True
     watchdog.start()
     try:
@@ -248,6 +251,7 @@ def _execute_http(
         if time.monotonic() >= deadline:
             raise ProviderFailure("tool_timeout")
         raw = content.decode("utf-8")
+        # 外部响应只接受有界 JSON；若对方回显服务端密钥，拒绝把它放进模型上下文。
         if secret and secret in raw:
             return {"ok": False, "error_code": "tool_result_sensitive"}
         result = json.loads(raw)

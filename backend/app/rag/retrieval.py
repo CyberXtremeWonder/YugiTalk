@@ -48,6 +48,7 @@ def rrf(rankings: list[list[dict[str, Any]]], limit: int) -> list[dict[str, Any]
     totals: dict[str, float] = defaultdict(float)
     rows: dict[str, dict[str, Any]] = {}
     for ranking in rankings:
+        # 各路分数尺度不同，只累加排名的倒数；同一条证据跨路命中可获得更高排名。
         seen: set[str] = set()
         for rank, row in enumerate(ranking, 1):
             key = str(row["id"])
@@ -75,6 +76,7 @@ async def recall_queries(
     store = index or VectorIndex(settings)
     groups: dict[str, dict[str, int]] = defaultdict(dict)
     for document, (version, collection) in scope.items():
+        # 按集合分组，以便同时兼容旧稠密索引与新混合索引，但禁止混入未知结构的集合。
         if collection not in {embeddings.collection, embeddings.legacy_collection}:
             raise ValueError("vector_schema_mismatch")
         groups[collection][document] = version
@@ -111,6 +113,7 @@ async def recall_queries(
                     )
                     kinds.append(True)
             results = await asyncio.gather(*jobs)
+            # 稠密向量使用相似度阈值，BM25 只排除零分；二者过滤后才交给 RRF 融合。
             return [
                 [row for row in rows if row["distance"] > 0]
                 if sparse
@@ -147,6 +150,7 @@ def materialize(
 ) -> list[dict[str, Any]]:
     """再次授权并校验 SQL 版本，达到子块覆盖率后替换为同版本父级原文。"""
     current = document_scope(db, settings, workspace, user, base)
+    # 向量库只提供候选 ID；正文和归属以 SQL 为准，已撤销或已换代的命中会被丢弃。
     candidates: list[dict[str, Any]] = []
     for hit in hits:
         chunk = db.get(Chunk, hit["id"])
@@ -197,6 +201,7 @@ def materialize(
         ):
             continue
         if len(members) >= max(2, math.ceil(parent.child_count * settings.rag_merge_ratio)):
+            # 多个子块覆盖同一段的大部分内容时，改用父块原文，减少碎片并保留上下文。
             merged[key] = {
                 **members[0],
                 "content": parent.content,
@@ -232,6 +237,7 @@ def pack_evidence(candidates: list[dict[str, Any]], characters: int) -> list[dic
     contents: set[str] = set()
     result: list[dict[str, Any]] = []
     remaining = characters
+    # 同一证据和重复正文分别去重；最后一个片段可截断，并明确标注 truncated。
     for item in candidates:
         content = str(item["content"])
         if item["evidence_id"] in seen or content in contents or remaining <= 0:

@@ -57,6 +57,7 @@ export function SkillsView({
     setNotice("");
     try {
       const detail = await identityRequest<Skill>(`/skills/${row.id}`);
+      // 目录仅含摘要，编辑时才读取完整正文；拿到详情后一次填充各草稿字段。
       if (!alive.current) return;
       setSelected(detail);
       setName(detail.name);
@@ -77,6 +78,7 @@ export function SkillsView({
     setNotice("");
     try {
       const result = await identityRequest<Skill>(
+        // 新建与追加版本共享表单；selected 决定目标路径，旧任务仍引用旧版本正文。
         selected ? `/skills/${selected.id}/versions` : path,
         "POST",
         { name, description, instructions, allowed_tools: tools, enabled },
@@ -109,6 +111,7 @@ export function SkillsView({
       );
       if (!alive.current) return;
       if (remove) reset();
+      // 启停只切换身份状态，不发布新正文；同时同步选中条目和表单开关。
       else {
         setSelected({ ...selected, enabled: !selected.enabled });
         setEnabled(!selected.enabled);

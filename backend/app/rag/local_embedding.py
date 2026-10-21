@@ -39,6 +39,7 @@ def local_model_path() -> Path:
     if (root / "config.json").is_file():
         return root
     reference = root / "refs/main"
+    # 兼容 Hugging Face 缓存布局：refs/main 指向具体快照，同时限制解析路径不得逃出缓存根。
     if not reference.is_file():
         raise RuntimeError("本地 BGE-M3 缓存缺少 refs/main，请设置 BGE_MODEL_PATH 为完整模型目录")
     snapshot = (root / "snapshots" / reference.read_text().strip()).resolve()
@@ -60,6 +61,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
             trust_remote_code=False,
         )
     except RuntimeError as error:
+        # 仅 auto 模式允许 CUDA 初始化失败后改用 CPU；显式指定设备时保留错误供定位。
         if os.getenv("BGE_DEVICE", "auto") != "auto" or not device.startswith("cuda"):
             raise
         logger.warning("CUDA 模型初始化失败，改用 CPU：%s", type(error).__name__)

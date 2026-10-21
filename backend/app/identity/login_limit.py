@@ -34,6 +34,8 @@ class RedisLoginLimiter:
                 socket_timeout=3,
                 socket_connect_timeout=3,
             ) as client:
+                # 同时限制来源 IP 与目标账号；Lua 将首次计数和过期时间设置合成原子操作。
+                # Redis 键只保存带密钥的摘要，避免直接暴露邮箱和地址。
                 for value, limit in ((f"ip:{address}", 30), (f"account:{email}", 10)):
                     key = "yugitalk:" + self.purpose + ":" + digest(secret, "rate-limit", value)
                     count = client.eval(COUNTER, 1, key)

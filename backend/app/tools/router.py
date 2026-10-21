@@ -44,6 +44,7 @@ def list_tools(account_id: AccountId, db: DB, actor: Actor, request: Request) ->
         ),
     ]
     items = []
+    # 是否启用、是否具备外部服务配置、是否允许维护分别返回，页面据此区分不可用原因。
     for name in names:
         item = descriptor(db, key, name)
         if item and (member.role in {"owner", "admin"} or member.role in item["required_roles"]):
@@ -72,6 +73,7 @@ def publish(db: DB, row: ManagedTool, data: ToolInput) -> None:
     if number > 100:
         raise HTTPException(409, detail={"code": "tool_version_limit"})
     config = data.model_dump(exclude={"enabled"})
+    # 端点与参数进入不可变版本，enabled 留在工具身份上，因此停用可立即影响旧版本任务。
     row.enabled = data.enabled
     db.add(ToolVersion(tool_id=row.id, number=number, config=config, content_hash=digest(config)))
     db.flush()
@@ -158,6 +160,7 @@ def toggle_tool(
     if row is None:
         if name not in TOOL_SCHEMAS:
             raise HTTPException(404)
+        # 内置工具默认无需数据库记录，首次切换开关时才建立该用户目录下的覆盖状态。
         row = ManagedTool(account_id=key, name=name, builtin=True)
         db.add(row)
     row.enabled = data.enabled

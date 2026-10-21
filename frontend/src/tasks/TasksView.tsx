@@ -62,6 +62,7 @@ export function TasksView({
                     setBusy(run.id);
                     setError("");
                     const key = (retryKeys.current[run.id] ||=
+                      // 网络结果不确定时保留同一恢复键；成功后删除，下一次操作再生成新键。
                       crypto.randomUUID());
                     void identityRequest(
                       `/runs/${run.id}/retry`,

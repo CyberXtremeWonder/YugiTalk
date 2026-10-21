@@ -31,6 +31,7 @@ from app.tasks.reliability import LeaseKeeper, utc
 def parse_file(content: bytes, suffix: str, strategy: str = "fixed") -> list[dict[str, Any]]:
     """在受限子进程中解析资料，限制执行时间和返回数据大小。"""
     result = subprocess.run(
+        # 解析放到独立进程，超时可直接终止，不让异常 PDF 长期占用 Worker。
         [sys.executable, "-m", "app.rag.parser", suffix, strategy],
         cwd=Path(__file__).resolve().parents[2],
         input=content,
@@ -150,6 +151,7 @@ def _index_document(
             attach_parents(db, key, generation, parts)
             db.commit()
         for start in range(0, len(parts), 16):
+            # 每批最多 16 个块；每批单独提交进度，使失败定位和页面进度都有明确边界。
             batch = parts[start : start + 16]
             stage = "embedding"
             if not mark_progress(
@@ -170,6 +172,7 @@ def _index_document(
                 ):
                     return
                 rows = []
+                # 文档 ID、索引代数和块序号共同生成稳定 ID，同一代重写可覆盖相同向量。
                 for part, vector in zip(batch, encoded, strict=True):
                     chunk_id = str(uuid5(NAMESPACE_URL, f"{key}:{generation}:{part['ordinal']}"))
                     db.add(
@@ -208,6 +211,7 @@ def _index_document(
         with Session(engine) as db:
             doc = db.scalar(select(Document).where(Document.id == key).with_for_update())
             if owns_document(doc, generation, token) and doc:
+                # 只有全部批次成功才发布 ready；部分已写入的向量不会进入授权检索范围。
                 doc.status = "ready"
                 doc.lease_token, doc.lease_until = None, None
                 doc.progress = {**doc.progress, "stage": "ready"}
@@ -295,6 +299,7 @@ def cleanup_document(engine: Engine, settings: Settings, key: str) -> None:
             return
         try:
             VectorIndex(settings).remove(doc.collection_name, doc.id)
+            # 外部存储与 SQL 没有共享事务；删除失败保留 deleting 墓碑，供下次继续清理。
             ObjectStorage(settings).remove(doc.object_key)
             clear_graph(db, key)
             db.execute(delete(GraphBuild).where(GraphBuild.document_id == key))

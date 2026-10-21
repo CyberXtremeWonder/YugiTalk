@@ -149,6 +149,7 @@ def review_tool(submission_id: UUID, data: ReviewInput, db: DB, actor: Writer) -
     if row.status != "pending":
         raise HTTPException(409, detail={"code": "tool_submission_reviewed"})
     if data.decision == "approved":
+        # 审核可能晚于提交很久，批准时重新检查账号、内容哈希、名称和配额，而非信任旧校验。
         submitter = db.get(User, row.submitter_id)
         if not submitter or not submitter.active:
             raise HTTPException(409, detail={"code": "tool_submitter_unavailable"})
@@ -177,6 +178,7 @@ def review_tool(submission_id: UUID, data: ReviewInput, db: DB, actor: Writer) -
         db.flush()
         publish(db, tool, config)
     row.status, row.reason = data.decision, data.reason
+    # 审核结果与工具版本一起提交，避免显示已批准但实际没有可用工具。
     row.reviewer_id, row.reviewed_at = actor.user.id, now()
     audit(db, actor.user, "tool.review." + data.decision, key, row.id)
     db.commit()

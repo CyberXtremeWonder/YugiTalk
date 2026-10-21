@@ -23,6 +23,7 @@ class ProcessDatabase:
         """同一子进程复用引擎；进程身份变化时丢弃继承池但不关闭父进程连接。"""
         pid = os.getpid()
         if self.engine is not None and self.pid != pid:
+            # fork 后套接字可能继承自父进程，只替换本进程的池引用，不关闭父进程连接。
             self.engine.dispose(close=False)
             self.engine, self.settings = None, None
         if self.engine is None:

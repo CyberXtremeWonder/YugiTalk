@@ -36,7 +36,9 @@ certifi==2026.7.22
     #   httpx
     #   requests
 cffi==2.1.1
-    # via argon2-cffi-bindings
+    # via
+    #   argon2-cffi-bindings
+    #   cryptography
 charset-normalizer==3.5.2
     # via requests
 click==8.5.0
@@ -52,6 +54,8 @@ click-plugins==1.1.1.2
     # via celery
 click-repl==0.4.1
     # via celery
+cryptography==49.0.0
+    # via yugitalk-backend
 distro==1.9.0
     # via langsmith
 fastapi==0.143.0

@@ -9,17 +9,35 @@ export function processStep(event: RunEvent): string | null {
   if (event.type === "error")
     return event.payload.error_code === "cancelled" ? "已停止" : "任务未完成";
   if (event.type !== "tool_status") return null;
+  if (event.payload.stage === "subagent")
+    return event.payload.status === "succeeded"
+      ? "执行助手已完成任务"
+      : "执行助手正在处理任务";
   if (event.payload.stage === "skill")
     return `应用 Skill：${event.payload.skill_name || "自定义流程"}`;
-  if (event.payload.stage === "agent_plan")
-    return event.payload.steps
-      ? `行动计划：${event.payload.steps.map((step, index) => `${index + 1}. ${step.title}（完成标准：${step.criterion}）`).join("；")}`
-      : "正在制定行动计划";
+  if (event.payload.stage === "agent_plan") {
+    // 未携带步骤表示仍在规划；有步骤时组合公开的行动标题与完成标准。
+    if (!event.payload.steps) return "正在制定行动计划";
+    const plan = event.payload.steps
+      .map(
+        (step, index) =>
+          `${index + 1}. ${step.title}（完成标准：${step.criterion}）`,
+      )
+      .join("；");
+    return `行动计划：${plan}`;
+  }
   if (event.payload.stage === "agent_revise") return "根据检查缺口修订计划";
-  if (event.payload.stage === "agent_reflect")
-    return event.payload.steps
-      ? `检查${event.payload.status === "passed" ? "通过" : "发现缺口"}：${event.payload.steps.map((step) => `${step.title}（${step.status === "completed" ? "已完成" : "未完成"}）`).join("；")}`
-      : "正在核对完成标准与执行证据";
+  if (event.payload.stage === "agent_reflect") {
+    if (!event.payload.steps) return "正在核对完成标准与执行证据";
+    const verdict = event.payload.status === "passed" ? "通过" : "发现缺口";
+    const checks = event.payload.steps
+      .map(
+        (step) =>
+          `${step.title}（${step.status === "completed" ? "已完成" : "未完成"}）`,
+      )
+      .join("；");
+    return `检查${verdict}：${checks}`;
+  }
   const ragStages: Record<string, string> = {
     rag_plan: "判断问题与拆分检索",
     rag_retrieve: "并行检索资料",
@@ -41,6 +59,9 @@ export function processStep(event: RunEvent): string | null {
   if (event.payload.stage === "recovery") return "从检查点恢复任务";
   if (event.payload.stage === "tool") {
     const names: Record<string, string> = {
+      delegate_task: "委派执行助手",
+      list_knowledge_bases: "查找相关知识库",
+      knowledge_search: "检索知识库",
       web_search: "网页搜索",
       text_stats: "文本统计",
       format_report: "报告排版",
@@ -49,7 +70,16 @@ export function processStep(event: RunEvent): string | null {
     };
     const name =
       names[event.payload.name || ""] || event.payload.name || "授权工具";
-    return `调用工具：${name}${event.payload.status === "failed" ? (event.payload.error_code === "tool_arguments_invalid" ? "（需要修正参数）" : event.payload.error_code === "tool_result_too_large" ? "（返回内容过大）" : "（查询失败）") : ""}`;
+    // 工具执行失败与参数需要修正分别提示；成功事件只显示工具名称。
+    let failure = "";
+    if (event.payload.status === "failed") {
+      if (event.payload.error_code === "tool_arguments_invalid")
+        failure = "（需要修正参数）";
+      else if (event.payload.error_code === "tool_result_too_large")
+        failure = "（返回内容过大）";
+      else failure = "（查询失败）";
+    }
+    return `调用工具：${name}${failure}`;
   }
   return null;
 }

@@ -104,6 +104,7 @@ def build_graph(engine: Engine, settings: Settings, key: str, generation: int) -
             )
         )
         parts = [(chunk.id, chunk.content) for chunk in chunks]
+        # 先复制本代原文并释放事务，模型抽取期间不持有文档锁；发布前再验证代数和令牌。
         db.commit()
 
     def guard(_event: str | None, _data: dict[str, object] | None, _cost: int) -> None:
@@ -154,11 +155,13 @@ def build_graph(engine: Engine, settings: Settings, key: str, generation: int) -
             ):
                 return
             clear_graph(db, key)
+            # 全部分块都抽取并校验成功后才替换图谱，避免读到部分新实体和部分旧关系。
             entities: dict[tuple[str, str], GraphEntity] = {}
             for chunk_id, _content, extracted in extracted_parts:
                 local = []
                 for item in extracted.entities:
                     identity = (item.name.casefold(), item.kind)
+                    # 文档内同名同类型实体复用 ID；关系端点仍按当前块的实体序号映射。
                     entity = entities.get(identity)
                     if entity is None:
                         entity = GraphEntity(
@@ -314,6 +317,7 @@ def graph_recall(
         if any(matches(name, question) for name in [item.name, *item.aliases])
     }
     frontier = set(sorted(frontier)[:8])
+    # 以问题直接提到的实体为起点，逐层扩展最多两跳；seen 阻止关系环无限遍历。
     seen = set(frontier)
     hits: dict[str, dict[str, Any]] = {}
     for _hop in range(2):
@@ -344,6 +348,7 @@ def graph_recall(
                 ):
                     continue
                 hits.setdefault(fact.chunk_id, {"id": fact.chunk_id})
+                # 图关系只用来找到原文分块，最终答案仍引用 SQL 中的文档证据。
                 following.update((fact.source_id, fact.target_id))
                 if len(hits) >= limit:
                     return list(hits.values())

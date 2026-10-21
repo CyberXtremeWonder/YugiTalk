@@ -2,6 +2,10 @@
 
 YugiTalk 是支持自定义 Agent、工具、知识库与后台任务的 AI 工作台。前端采用 React + TypeScript + Vite，后端采用 Python 3.12 + FastAPI，使用 LangGraph、Celery、PostgreSQL、Redis、MinIO 与 Milvus。
 
+Agent 页面支持独立配置模型提供商（OpenAI 兼容协议、Anthropic、Mock）、模型名称、API 根 URL 和 API Key，也可继续使用服务器默认配置。修改后发布新版本，已有任务保留原版本配置。编辑时 API Key 留空保留原密钥；更换提供商或 URL 时需重新填写。密钥加密保存且不回显，加密依赖 `SESSION_SECRET`，API 与 worker 应使用相同且稳定的值；更换该值后需重新保存各助手的 API Key。非测试环境的模型 URL 须使用 HTTPS。
+
+新对话采用 Router → 执行 Subagent：主助手只负责委派和汇总，执行助手复用所选 Agent 的模型、提示词及工具授权，自主调用业务工具、发现并检索当前用户的知识库。对话窗口无需选择知识库，检索来源仍可查看原文。第一版采用单层串行委派，每轮最多三次；父子执行共用任务预算、取消和租约，检查点分别保存，无需新增数据库表。开启预算限制时，多次模型调用仍计入原任务总额度。旧任务及显式指定知识库的旧客户端保留原执行路径。
+
 当前阶段 0–5 已验收，阶段 6 生产完善仍在进行中，尚未达到完整生产发布条件，详见 [阶段 6 报告](docs/stages/06-production.md)。
 
 ## 功能说明

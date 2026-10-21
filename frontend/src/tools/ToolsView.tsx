@@ -80,6 +80,7 @@ export function ToolsView({
     setNotice("");
     setSample("{}");
     if (row.config) {
+      // 目录配置与参数编辑文本分别保存；只有提交时才把 JSON 文本解析回结构化参数。
       setDraft(row.config);
       setParameters(JSON.stringify(row.config.parameters, null, 2));
     }
@@ -100,6 +101,7 @@ export function ToolsView({
         identity.csrf_token,
       );
       const items = await refresh();
+      // 发布响应确认成功后再取最新目录，使版本号、权限与就绪说明保持服务端口径。
       if (alive.current) {
         setSelected(items.find((row) => row.name === result.name) || result);
         setNotice(`Tool 已发布：${result.title} · v${result.number}`);
@@ -135,6 +137,7 @@ export function ToolsView({
         identity.csrf_token,
       );
       await loadSubmissions();
+      // 待审声明不会立刻进入工具目录；刷新的是审核记录，之后清空当前提交草稿。
       if (alive.current) {
         reset();
         setNotice("工具已提交审核，批准后才会加入工具目录。");
@@ -183,6 +186,7 @@ export function ToolsView({
     setNotice("");
     try {
       const args: unknown = JSON.parse(sample);
+      // 先检查 JSON 外形，再交给服务端当前已发布版本校验字段；此按钮不会执行草稿端点。
       if (!args || typeof args !== "object" || Array.isArray(args))
         throw new Error("示例参数应为 JSON 对象。");
       await identityRequest(

@@ -28,12 +28,14 @@ class Run(Base):
     conversation_id: Mapped[str] = mapped_column(ForeignKey("conversations.id"), index=True)
     agent_version_id: Mapped[str] = mapped_column(ForeignKey("agent_versions.id"))
     snapshot: Mapped[dict[str, object]] = mapped_column(JSON)
+    # 幂等键识别请求，哈希防止同键换内容；快照固定本次任务所用的助手和资源版本。
     idempotency_key: Mapped[str] = mapped_column(String(128))
     request_hash: Mapped[str] = mapped_column(String(64))
     prompt: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(16), default="queued", index=True)
     cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False)
     reserved_tokens: Mapped[int] = mapped_column(Integer)
+    # reserved 是占用额度，charged 是保守消耗；input/output 是供应商报告的实际用量。
     charged_tokens: Mapped[int] = mapped_column(Integer, default=0)
     input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -49,6 +51,7 @@ class Run(Base):
     state_version: Mapped[int] = mapped_column(Integer, default=0)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     active_seconds: Mapped[int] = mapped_column(Integer, default=0)
+    # 只累计真正运行的时间片段，等待人工补充或排队的时间不计入 active_seconds。
     slice_started_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

@@ -57,6 +57,7 @@ def login(data: LoginInput, request: Request, response: Response, db: DB) -> dic
     user = db.scalar(
         select(User).where(or_(func.lower(User.email) == data.email, User.username == data.email))
     )
+    # 未找到账号也执行一次密码哈希校验，减少通过响应耗时探测账号是否存在的差异。
     valid = verify_password(user.password_hash if user else dummy_hash, data.password)
     if user is None or not user.active or not valid:
         raise HTTPException(401)
@@ -64,6 +65,7 @@ def login(data: LoginInput, request: Request, response: Response, db: DB) -> dic
         raise HTTPException(403, detail={"code": "development_admin_required"})
     settings: Settings = request.app.state.settings
     if hasher.check_needs_rehash(user.password_hash):
+        # 登录成功时顺便升级旧哈希参数，无需保存或找回原始明文密码。
         user.password_hash = hasher.hash(data.password)
     # 每次登录轮换随机令牌，旧 Cookie 对应的会话立即撤销。
     old = request.cookies.get(COOKIE)
@@ -193,6 +195,7 @@ def admin_account_state(
     if target.platform_admin or target.id == actor.user.id:
         raise HTTPException(409, detail={"code": "admin_account_protected"})
     target.active = data.active
+    # 停用同时撤销会话，重新启用后也必须重新登录，旧会话不会复活。
     if not data.active:
         db.execute(delete(LoginSession).where(LoginSession.user_id == target.id))
     audit(

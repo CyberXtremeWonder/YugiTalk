@@ -42,6 +42,7 @@ export function App() {
     document.addEventListener("pointerdown", pointer);
     document.addEventListener("keydown", keyboard);
     void fetchIdentity()
+      // 401 表示正常未登录；网络故障才显示连接错误。active 阻止卸载后的旧请求回写。
       .then((data) => {
         if (active) setIdentity(data);
       })
@@ -116,6 +117,7 @@ function Workbench({
   onLogout: () => void;
 }) {
   const currentAccount = useMemo(
+    // 个人空间与用户 ID 对应；稳定对象引用使名称/身份未变化时不会重复触发依赖它的加载。
     () => ({
       id: identity.user.id,
       name: identity.user.name,
@@ -125,6 +127,7 @@ function Workbench({
   const [logoutError, setLogoutError] = useState("");
   const [view, setView] = useState<ViewId>(readView);
   const [draft, setDraft] = useState("");
+  // 草稿、所选会话与当前任务由工作台持有；各业务页根据这些状态加载自己的数据。
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [currentRun, setCurrentRun] = useState<Run | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -158,6 +161,7 @@ function Workbench({
   const current = views[view];
   /** 切换当前功能页面并同步地址栏位置。 */
   function navigate(next: ViewId) {
+    // pushState 不会主动触发 hashchange，因此这里同时更新 React 状态与地址栏。
     setView(next);
     setMenu(false);
     window.history.pushState(null, "", `#${next}`);
@@ -194,6 +198,7 @@ function Workbench({
   }, []);
   useEffect(() => {
     if (view !== "settings") return;
+    // 只在设置页探测服务，不让普通聊天操作持续发起健康检查请求。
     // 页面切换时取消请求，避免卸载后更新；超时也要向用户反馈。
     const controller = new AbortController();
     let active = true;

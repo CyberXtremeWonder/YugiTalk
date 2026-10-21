@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.agents.contracts import AgentConfig, effective_config
 from app.agents.graph import run_graph
+from app.agents.model_config import model_settings
 from app.chat.models import Message
 from app.core.config import Settings
 from app.core.entities import identifier, now
@@ -81,6 +82,7 @@ def finish_run(
         )
         if run is None or run.status in {"succeeded", "failed", "cancelled"}:
             return
+        # 已被接管的旧 Worker 无权结算；否则可能覆盖新 Worker 的结果或重复扣费。
         if lease_token is not None and (
             run.lease_token != lease_token or not run.lease_until or utc(run.lease_until) <= now()
         ):
@@ -92,12 +94,14 @@ def finish_run(
         run.charged_tokens = max(run.charged_tokens, charged)
         from app.observability.traces import run_usage
 
+        # 供应商实际 Token 用量与保守计费用量分开记录；有调用缺失用量时不伪造精确统计。
         usage = run_usage(db, key)
         if usage["model_calls"]:
             incomplete = usage["unknown_usage_calls"] or usage["unrecorded_attempts"]
             input_tokens = None if incomplete else usage["input_tokens"]
             output_tokens = None if incomplete else usage["output_tokens"]
         run.input_tokens, run.output_tokens = input_tokens, output_tokens
+        # 释放提交时占用的整笔额度，只把尚未结算的消耗转为 spent。
         for budget_key in ("space:" + run.account_id, "user:" + run.owner_id):
             budget = db.scalar(select(Budget).where(Budget.key == budget_key).with_for_update())
             if budget is not None:
@@ -113,12 +117,15 @@ def finish_run(
             .where(ToolExecution.run_id == key, Approval.status == "pending")
         ):
             approval.status, approval.decided_at = "cancelled", now()
-        if run.snapshot.get("knowledge_base_id"):
+        if run.snapshot.get("knowledge_base_id") or run.snapshot.get("sources"):
             # 来源身份独立保存到 sources；成功、失败和取消的正文都不展示索引。
             text = re.sub(r"\[\s*S\d+\s*\]", "", text).strip()
-        if text and run.snapshot.get("closed_loop"):
+        if text and run.snapshot.get("closed_loop") and not run.snapshot.get("router_mode"):
+            # 闭环模式隐藏候选答复，到结算时才一次性向前端发布最终文本。
             append_event(db, run, "text_delta", {"text": text})
         if text:
+            # 回复以任务 ID 作为消息 ID，与前端 watch 中移除重放消息的规则对应。
+            # 正文、任务终态和结束事件在同一事务提交，前端收到结束后即可读取完整历史。
             existing = db.get(Message, run.id)
             sequence = (
                 db.scalar(
@@ -148,6 +155,11 @@ def finish_run(
             {
                 "status": status,
                 "error_code": error,
+                # 截断作为结构化结果公开；SSE 断线续传只补读事件，不自动重启失败生成。
+                "truncated": error in {
+                    "event_limit", "model_output_limit", "model_response_too_large",
+                    "model_stream_size_limit", "model_repetition",
+                },
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,
                 "charged_tokens": run.charged_tokens,
@@ -197,6 +209,7 @@ class Execution:
                 raise ProviderFailure("cancelled")
             self.check(db, run)
             run.lease_until = now() + timedelta(seconds=self.settings.run_lease_seconds)
+            # 执行期间知识文档仍可能被删除或重建；快照中的来源必须持续保持有效。
             for source in cast(list[dict[str, Any]], run.snapshot.get("sources", [])):
                 from app.rag.models import Document
 
@@ -206,7 +219,9 @@ class Execution:
                     or doc.status != "ready"
                     or doc.index_version != source["index_version"]
                     or doc.account_id != run.account_id
-                    or doc.knowledge_base_id != str(run.snapshot.get("knowledge_base_id"))
+                    or doc.knowledge_base_id != str(
+                        source.get("knowledge_base_id", run.snapshot.get("knowledge_base_id"))
+                    )
                     or doc.collection_name != source.get("collection_name", doc.collection_name)
                     or doc.embedding_version
                     != source.get("embedding_version", doc.embedding_version)
@@ -221,6 +236,7 @@ class Execution:
                 # 用最坏情况预留本次调用成本，取消或用量未知时仍有确定的保守结算。
                 run.charged_tokens += reserve
             if kind:
+                # 留出结算所需的事件位置，避免输出过多导致最后的回复或结束事件无法写入。
                 terminal_events = 2 if run.snapshot.get("closed_loop") else 1
                 if run.event_sequence >= self.settings.run_event_limit - terminal_events:
                     raise ProviderFailure("event_limit")
@@ -289,7 +305,8 @@ class Execution:
                 raise ProviderFailure("cancelled")
             self.check(db, run)
             payload = {**state, "calls": [call.model_dump() for call in state["calls"]]}
-            run.checkpoint = {"node": node, "state": payload}
+            # node 表示恢复后要执行的下一节点；工具调用转为 JSON 数据后随状态一起保存。
+            run.checkpoint = {**run.checkpoint, "node": node, "state": payload}
             run.state_version += 1
             db.commit()
 
@@ -301,6 +318,7 @@ class Execution:
                 raise ProviderFailure("cancelled")
             self.check(db, run)
             item, pin = prepare_bound_tool(db, run, call, step, self.settings)
+            # 若工具已成功但后续图检查点尚未写入，恢复时直接复用账本结果。
             if item.status == "succeeded":
                 from app.observability.traces import trace_details
 
@@ -352,6 +370,7 @@ class Execution:
                 {"stage": "running", "summary": "正在理解任务并选择授权工具"},
             )
             db.commit()
+        # 慢模型或工具调用期间由 LeaseKeeper 持续续租，避免被调度器误判为失联。
         with LeaseKeeper(self.engine, self.settings, Run, self.key, self.token):
             from app.observability.traces import recording, trace_step
 
@@ -379,12 +398,15 @@ class Execution:
         try:
             from app.observability.traces import trace_step
 
+            connection_settings = model_settings(self.settings, config_data)
+
             with trace_step("memory", "会话上下文与用户记忆读取"):
                 with Session(self.engine) as db:
                     run = db.get(Run, self.key)
                     if run is None:
                         return
                     self.check(db, run)
+                    # 图检查点已有包含工具结果的完整消息，恢复时沿用它；新任务才重建历史。
                     messages = (
                         cast(
                             list[dict[str, object]],
@@ -398,6 +420,7 @@ class Execution:
                 pin = cast(dict[str, Any], config_data["skill"])
                 self.update("tool_status", {"stage": "skill", "skill_name": pin["name"]}, 0)
             sources = cast(list[dict[str, Any]], config_data.get("sources", []))
+            # 选择知识库时先检索证据，再进入 Agent 图；图已启动的恢复任务不重复检索。
             if config_data.get("knowledge_base_id") and (
                 not checkpoint or checkpoint.get("node") == "rag"
             ):
@@ -407,12 +430,7 @@ class Execution:
                         return
                     self.check(db, run)
                     workspace, owner, prompt = run.account_id, run.owner_id, run.prompt
-                if (
-                    config_data["provider"] != self.settings.model_provider
-                    or config_data["model"] != self.settings.model_id
-                ):
-                    raise ProviderFailure("model_configuration_changed")
-                rag_settings = self.settings.model_copy(
+                rag_settings = connection_settings.model_copy(
                     update=cast(dict[str, Any], config_data.get("rag_config", {}))
                 )
                 from app.rag.embeddings import Embeddings
@@ -433,6 +451,7 @@ class Execution:
                 )
                 state = pipeline.run(prompt, cast(dict[str, Any] | None, checkpoint.get("rag")))
                 if state["phase"] == "clarify":
+                    # save_rag 已将任务保存为 waiting_input，等待前端补充信息后继续。
                     return
                 self.update()
                 sources = state["sources"]
@@ -453,19 +472,26 @@ class Execution:
                             "请仅根据资料回答当前问题，正文不要输出 [S1] 等来源索引；"
                             "来源由应用单独展示，不要自行生成来源链接；"
                             "每个来源都含有稳定 evidence_id；"
-                            "证据不足时明确说明，不编造来源：\n"
+                            "部分支持时只回答原文支持的部分并明确缺口，不编造来源：\n"
                         )
                         + json.dumps(sources, ensure_ascii=False),
+                        "rag_evidence": {
+                            "coverage": "partial" if state["route"] == "partial_answer"
+                            else "sufficient",
+                            "sources": sources,
+                        },
                     },
                 )
                 # 已完成 RAG 的检查点不属于 Agent 图；第一次回答会保存完整消息状态。
                 checkpoint = {}
+            # 快照还包含连接、检索和资源版本信息；这里只取执行图需要的助手配置字段。
             config = AgentConfig.model_validate(
                 {
                     key: value
                     for key, value in config_data.items()
                     if key
                     not in {
+                        "api_key_encrypted",
                         "provider",
                         "model",
                         "knowledge_base_id",
@@ -477,16 +503,12 @@ class Execution:
                         "rag_embedding_version",
                         "skill",
                         "tool_catalog",
+                        "router_mode",
                     }
                 }
             )
-            if (
-                config_data["provider"] != self.settings.model_provider
-                or config_data["model"] != self.settings.model_id
-            ):
-                raise ProviderFailure("model_configuration_changed")
             provider = factory(
-                self.settings, str(config_data["provider"]), str(config_data["model"])
+                connection_settings, str(config_data["provider"]), str(config_data["model"])
             )
             if isinstance(provider, HTTPProvider) and "tool_catalog" in config_data:
                 provider.tool_schemas = {
@@ -499,15 +521,33 @@ class Execution:
                     **resume,
                     "calls": [ToolCall.model_validate(item) for item in resume["calls"]],
                 }
-                text = "" if config.closed_loop else str(resume["text"])
+                text = (
+                    "" if config.closed_loop and not config_data.get("router_mode")
+                    else str(resume["text"])
+                )
                 # 恢复时替换未提交的半截模型输出，避免再次调用后在 UI 重复拼接。
                 self.update("checkpoint_restored", {"text": text}, 0)
 
             def collect(delta: str) -> None:
-                """追加本次流式回复的文本增量，并提交可续传的公开事件。"""
+                """累计用于最终落库的文本；公开事件由执行图通过 update 单独提交。"""
                 nonlocal text
                 text += delta
 
+            if config_data.get("router_mode"):
+                from app.agents.subagents import run_router
+
+                result = run_router(
+                    self, config, config_data, connection_settings, factory, provider,
+                    messages, checkpoint, collect,
+                )
+                text = result["text"]
+                finish_run(
+                    self.engine, self.key, "succeeded", None, text, 0,
+                    result["input_tokens"], result["output_tokens"], self.token,
+                )
+                return
+
+            # 执行图负责模型/工具顺序；以下回调把事件、文本、检查点和工具账本接回数据库。
             result = run_graph(
                 self.settings,
                 config,
@@ -529,6 +569,7 @@ class Execution:
             )
         except ProviderFailure as failure:
             if failure.code == "lease_lost":
+                # 失去租约后立即退出，把任务结果交给当前持有租约的执行者处理。
                 return
             finish_run(
                 self.engine,

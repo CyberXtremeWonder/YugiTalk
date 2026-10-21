@@ -116,6 +116,8 @@ class Settings(BaseSettings):
     model_max_retries: int = Field(default=2, ge=0, le=3)
     # 流式协议包含逐帧元数据与非正文增量，容量独立于回答正文和 Token 额度。
     model_max_stream_bytes: int = Field(default=4_194_304, ge=262_144, le=16_777_216)
+    # 文字在生成层按 128 字符／150ms 合并；此处限制持久事件数，不限制 Token 数。
+    # 上限仍为终态预留位置，异常不能让事件流悄悄结束。
     run_event_limit: int = Field(default=1000, ge=20, le=5000)
     run_event_retention_seconds: int = Field(default=86_400, ge=60)
     otel_exporter_otlp_endpoint: str = ""
@@ -152,6 +154,7 @@ class Settings(BaseSettings):
             ):
                 raise ValueError("EMBEDDING_BASE_URL 必须是有效的嵌入服务前缀")
         if self.app_env == "production":
+            # 开发默认值只用于本机启动；生产额外要求真实服务、独立凭证与明确的 HTTPS 来源。
             if len(self.metrics_token.get_secret_value()) < 32:
                 raise ValueError("生产 METRICS_TOKEN 必须使用至少 32 位的独立随机值")
             if self.embedding_provider == "mock":
@@ -203,6 +206,7 @@ class Settings(BaseSettings):
             if not redis.password:
                 raise ValueError("生产 Redis 必须配置认证")
             local_storage_fixture = (
+                # 隔离验收的 HTTP 存储例外同时绑定固定服务地址和入口，不能作为通用跳过开关。
                 self.storage_local_test_fixture
                 and self.storage_endpoint == "http://storage:9000"
                 and self.auth_trusted_origins == ["https://localhost:18443"]

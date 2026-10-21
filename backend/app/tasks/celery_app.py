@@ -27,9 +27,11 @@ celery_app.conf.update(
     result_serializer="json",
     accept_content=["json"],
     task_acks_late=True,
+    # Worker 完成后才确认消息，进程丢失时可重投；数据库领取与账本吸收重复执行请求。
     task_reject_on_worker_lost=True,
     worker_prefetch_multiplier=1,
     task_soft_time_limit=settings.task_timeout_seconds,
+    # 先给业务清理机会，十秒后再硬终止；失联任务最终由租约恢复机制接管。
     task_time_limit=settings.task_timeout_seconds + 10,
     result_expires=600,
     broker_connection_retry_on_startup=True,

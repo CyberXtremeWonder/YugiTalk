@@ -77,6 +77,7 @@ def create_app(
         logger.info("API 已完成关闭")
 
     development = config.app_env != "production"
+    # 应用工厂只负责组装依赖；测试传入替身，正常启动则连接真实数据库、限流器和队列。
     app = FastAPI(
         title="YugiTalk API",
         version="0.1.0",
@@ -97,6 +98,7 @@ def create_app(
     app.state.send_verification_code = send_code
     app.state.dispatch_run = dispatch_run
     app.state.dispatch_document = dispatch_document
+    # 各模块路由共享上面的依赖，通过 request.app.state 获取配置与服务入口。
     app.include_router(health_router)
     app.include_router(identity_router)
     app.include_router(agents_router)
@@ -152,6 +154,7 @@ def create_app(
                 )
                 response = error_response(request, "internal_error", "服务暂时不可用", 500)
             route = getattr(request.scope.get("route"), "path", "unmatched")
+            # 指标使用路由模板而非含资源 ID 的实际 URL，避免每个请求生成一种新标签。
             method = (
                 request.method
                 if request.method in {"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"}
@@ -250,6 +253,7 @@ def create_app(
             "skill_version_limit": (409, "单个技能最多发布 100 个版本"),
         }
         business_code = error.detail.get("code") if isinstance(error.detail, dict) else None
+        # 业务错误码与 HTTP 状态必须同时匹配白名单；其余异常统一使用通用提示。
         if isinstance(business_code, str) and business_code in business_errors:
             status, business_message = business_errors[business_code]
             if status == error.status_code:

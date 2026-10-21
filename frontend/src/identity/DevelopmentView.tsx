@@ -34,6 +34,7 @@ export function DevelopmentView({ identity }: { identity: Identity }) {
   useEffect(() => {
     let active = true;
     void Promise.all([
+      // 状态、用户首页和审计记录互不依赖，并行读取后统一显示；卸载时忽略旧结果。
       identityRequest<Status>("/admin/development/status"),
       identityRequest<{ items: Account[]; next_cursor: string | null }>(
         "/admin/users?limit=20",

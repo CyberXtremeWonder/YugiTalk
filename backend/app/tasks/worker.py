@@ -19,9 +19,11 @@ def ping() -> dict[str, str]:
 def execute_agent(run_id: str) -> None:
     """只传递运行 ID，敏感提示词不进入队列参数或结果后端。"""
     engine, settings = database.get()
+    # 接续 API 投递时的追踪上下文，便于把提交请求与后台执行串起来查看。
     headers = getattr(celery_app.current_task.request, "headers", None) or {}
     with worker_telemetry().span("agent.execute", propagate.extract(headers)) as span:
         span.set_attribute("run.id", run_id)
+        # 队列只负责唤醒；Execution 会从数据库领取任务，并阻止重复投递造成并发执行。
         Execution(engine, settings, run_id).execute()
 
 

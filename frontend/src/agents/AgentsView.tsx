@@ -16,6 +16,16 @@ export function AgentsView({
   const [agents, setAgents] = useState<Agent[]>([]);
   const [selected, setSelected] = useState<Agent | null>(null);
   const [name, setName] = useState("通用助手");
+  const [provider, setProvider] = useState("");
+  const [model, setModel] = useState("");
+  const [baseUrl, setBaseUrl] = useState("");
+  const [apiKey, setApiKey] = useState("");
+  const keepsKey = Boolean(
+    // 服务端不回显密钥；只有连接目标未变时，留空才表示沿用已保存的密钥。
+    selected?.config.has_api_key &&
+    provider === selected.config.provider &&
+    baseUrl.trim().replace(/\/+$/, "") === selected.config.base_url,
+  );
   const [prompt, setPrompt] = useState(
     "你是可靠的中文助手。根据任务选择授权工具，清晰回答并说明不确定性。",
   );
@@ -60,6 +70,10 @@ export function AgentsView({
   function resetAgent() {
     setSelected(null);
     setName("通用助手");
+    setProvider("");
+    setModel("");
+    setBaseUrl("");
+    setApiKey("");
     setPrompt("你是可靠的中文助手。");
     setTools([
       "text_stats",
@@ -119,8 +133,17 @@ export function AgentsView({
                 disabled={busy}
                 aria-pressed={selected?.id === agent.id}
                 onClick={() => {
+                  // 编辑先把选中版本复制到草稿；密码框保持空白，保存时由服务端决定是否复用。
                   setSelected(agent);
                   setName(agent.name);
+                  setProvider(
+                    agent.config.base_url === undefined
+                      ? ""
+                      : agent.config.provider,
+                  );
+                  setModel(agent.config.model);
+                  setBaseUrl(agent.config.base_url ?? "");
+                  setApiKey("");
                   setPrompt(agent.config.system_prompt);
                   setTools(agent.config.tools);
                   setClosedLoop(agent.config.closed_loop ?? false);
@@ -147,7 +170,11 @@ export function AgentsView({
               setBusy(true);
               setNotice("");
               const config = {
+                // 留空 provider 表示服务器默认模型；独立配置才发送模型地址和密钥字段。
                 name,
+                ...(provider
+                  ? { provider, model, base_url: baseUrl, api_key: apiKey }
+                  : {}),
                 system_prompt: prompt,
                 closed_loop: closedLoop,
                 tools,
@@ -155,6 +182,7 @@ export function AgentsView({
                 ...limits,
               };
               void identityRequest(
+                // 新助手创建第一版，已有助手追加版本；发布后重读目录取得服务端版本号。
                 selected ? `/agents/${selected.id}/versions` : path,
                 "POST",
                 config,
@@ -164,6 +192,7 @@ export function AgentsView({
                 .then((rows) => {
                   setAgents(rows);
                   setSelected(null);
+                  setApiKey("");
                   setNotice("版本发布成功，可以回到对话页选择助手。");
                 })
                 .catch((error) => setNotice(error.message))
@@ -180,6 +209,72 @@ export function AgentsView({
                 onChange={(event) => setName(event.target.value)}
               />
             </label>
+            <label>
+              模型提供商
+              <select
+                value={provider}
+                disabled={busy}
+                onChange={(event) => {
+                  setProvider(event.target.value);
+                  setModel(event.target.value === "mock" ? "mock-v1" : "");
+                  setBaseUrl("");
+                  setApiKey("");
+                }}
+              >
+                <option value="">使用服务器默认配置</option>
+                <option value="openai_compatible">OpenAI 兼容供应商</option>
+                <option value="anthropic">Anthropic</option>
+                <option value="mock">Mock（离线演示）</option>
+              </select>
+            </label>
+            {provider && (
+              <>
+                <label>
+                  模型名称
+                  <input
+                    required
+                    maxLength={200}
+                    value={model}
+                    disabled={busy}
+                    onChange={(event) => setModel(event.target.value)}
+                  />
+                </label>
+                {provider !== "mock" && (
+                  <>
+                    <label>
+                      模型 URL
+                      <input
+                        type="url"
+                        required
+                        maxLength={2048}
+                        value={baseUrl}
+                        disabled={busy}
+                        placeholder="https://模型服务地址/v1"
+                        onChange={(event) => setBaseUrl(event.target.value)}
+                      />
+                    </label>
+                    <p>
+                      填写 API 根地址（含服务要求的路径），无需填写
+                      /chat/completions 或 /messages。
+                    </p>
+                    <label>
+                      模型 API Key
+                      <input
+                        type="password"
+                        autoComplete="new-password"
+                        required={!keepsKey}
+                        value={apiKey}
+                        disabled={busy}
+                        placeholder={
+                          keepsKey ? "已保存，留空保留原密钥" : "请输入 API Key"
+                        }
+                        onChange={(event) => setApiKey(event.target.value)}
+                      />
+                    </label>
+                  </>
+                )}
+              </>
+            )}
             <label>
               系统提示词
               <textarea

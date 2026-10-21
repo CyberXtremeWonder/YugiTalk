@@ -143,6 +143,7 @@ async def upload(
     ):
         raise HTTPException(422, detail={"code": "document_file_invalid"})
     content = bytearray()
+    # 边收边检查大小，不能先完整读取再拒绝，否则超大上传仍会耗尽进程内存。
     async for block in request.stream():
         if len(content) + len(block) > 20 * 1024 * 1024:
             raise HTTPException(413)
@@ -162,6 +163,7 @@ async def upload(
         db.flush()
         existing = None
     if existing:
+        # 内容相同可复用已有导入；切块策略不同则冲突，不能把两种索引语义混为一份。
         existing_strategy = (
             "markdown_sections"
             if existing.chunk_strategy == "markdown-sections-700-parent-v1"
@@ -199,6 +201,7 @@ async def upload(
         ),
     )
     storage = ObjectStorage(request.app.state.settings)
+    # 对象存储无法参加 SQL 事务，先存原文再提交元数据；SQL 失败时尽力删除孤立对象。
     try:
         storage.put(doc.object_key, bytes(content))
         db.add(doc)
@@ -277,6 +280,7 @@ def remove(document_id: UUID, request: Request, db: DB, actor: Writer) -> dict[s
     if doc.status == "deleted":
         return document_data(doc)
     doc.status, doc.error_code = "deleting", None
+    # 先提交不可检索状态并撤销租约，实际删除对象和向量由后台完成。
     doc.lease_token, doc.lease_until, doc.last_dispatched_at = None, None, None
     audit(db, actor.user, "document.delete", doc.account_id, doc.id)
     db.commit()
@@ -394,6 +398,7 @@ def source(
             raise HTTPException(404)
         content = parent.content
     identity = evidence_identity(
+        # 重新计算来源身份，防止历史引用在文档重建后悄悄指向不同内容。
         doc.account_id,
         doc.knowledge_base_id,
         {

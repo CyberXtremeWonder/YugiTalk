@@ -37,8 +37,10 @@ done
 
 printf '检查开发配置……\n'
 docker compose config --quiet
-printf '构建并启动前端、后端及依赖，首次运行可能需要较长时间……\n'
-docker compose up --build -d --wait --wait-timeout 600
+printf '第一步：构建镜像，下面会显示依赖下载进度；首次构建可能需要几分钟……\n'
+docker compose --progress plain build
+printf '第二步：启动服务并等待健康检查……\n'
+docker compose up -d --wait --wait-timeout 600
 
 printf '\n启动完成。\n'
 printf '前端：http://127.0.0.1:8080/\n'

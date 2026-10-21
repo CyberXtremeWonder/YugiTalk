@@ -2094,6 +2094,7 @@ dependencies = [
     { name = "argon2-cffi" },
     { name = "boto3" },
     { name = "celery", extra = ["redis"] },
+    { name = "cryptography" },
     { name = "datasets" },
     { name = "fastapi" },
     { name = "httpx" },
@@ -2112,7 +2113,6 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "cryptography" },
     { name = "mypy" },
     { name = "pip-audit" },
     { name = "pytest" },
@@ -2125,6 +2125,7 @@ requires-dist = [
     { name = "argon2-cffi", specifier = ">=25,<26" },
     { name = "boto3", specifier = ">=1.40,<2" },
     { name = "celery", extras = ["redis"], specifier = ">=5.6,<6" },
+    { name = "cryptography", specifier = ">=45,<50" },
     { name = "datasets", specifier = "==3.6.0" },
     { name = "fastapi", specifier = ">=0.115,<1" },
     { name = "httpx", specifier = ">=0.28,<1" },
@@ -2143,7 +2144,6 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "cryptography", specifier = ">=45,<50" },
     { name = "mypy", specifier = ">=1.15,<2" },
     { name = "pip-audit", specifier = ">=2.9,<3" },
     { name = "pytest", specifier = ">=8,<10" },

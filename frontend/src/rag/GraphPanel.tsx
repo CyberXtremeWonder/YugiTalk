@@ -76,6 +76,7 @@ export function GraphPanel({
         csrf,
       );
       setData({ status: "queued", facts: [] });
+      // revision 触发 effect 重新启动轮询；仅更新 data 不会重新建立刷新循环。
       setRevision((value) => value + 1);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "提交失败");

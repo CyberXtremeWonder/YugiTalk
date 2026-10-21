@@ -63,6 +63,7 @@ def publish(db: DB, skill: Skill, data: SkillInput, user: str | None = None) -> 
     if number > 100:
         raise HTTPException(409, detail={"code": "skill_version_limit"})
     skill.name, skill.enabled = data.name, data.enabled
+    # 更新目录上的名称/开关，同时追加版本记录；旧正文和工具许可不被覆盖。
     db.add(
         SkillVersion(
             skill_id=skill.id,
@@ -113,6 +114,7 @@ def create_skill(
     key = str(account_id)
     membership(db, key, actor.user.id)
     lock_workspace(db, key)
+    # 同一用户目录上的配额检查、重名检查和插入串行执行，避免并发越过限制。
     validate_names(db, key, data.allowed_tools, actor.user.id)
     count = db.scalar(
         select(func.count())

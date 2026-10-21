@@ -42,6 +42,7 @@ def memories(account_id: AccountId, db: DB, actor: Actor) -> dict[str, Any]:
     membership(db, key, actor.user.id)
     choice = preference(db, key, actor.user.id)
     enabled = choice is None or choice.enabled
+    # 关闭记忆时隐藏列表但保留原数据，重新开启后仍可使用；删除由独立接口完成。
     rows = (
         db.scalars(
             select(Memory)
@@ -100,6 +101,7 @@ def save_memory(account_id: AccountId, data: MemoryInput, db: DB, actor: Writer)
     if choice and not choice.enabled:
         raise HTTPException(409, detail={"code": "memory_disabled"})
     count = (
+        # 用户父行已加锁，计数与插入之间不会被另一请求抢占最后一个记忆名额。
         db.scalar(
             select(func.count())
             .select_from(Memory)
@@ -121,6 +123,7 @@ def save_memory(account_id: AccountId, data: MemoryInput, db: DB, actor: Writer)
 def edit_memory(memory_id: UUID, data: MemoryInput, db: DB, actor: Writer) -> dict[str, Any]:
     """验证记忆归属和当前开关后更新偏好内容。"""
     row = db.get(Memory, str(memory_id))
+    # 先检查记录归属再读取偏好开关，避免借其他用户的记忆 ID 访问其资源。
     if row is None or row.user_id != actor.user.id:
         raise HTTPException(404)
     membership(db, row.account_id, actor.user.id)

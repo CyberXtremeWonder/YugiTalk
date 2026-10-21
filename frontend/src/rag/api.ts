@@ -58,7 +58,7 @@ export interface UploadBatch {
 }
 
 // 浏览器文件夹选择器提供递归文件列表；逐个上传，避免同时读入多个大文件。
-/** 按并发上限上传文件队列，累计完成、失败和重复资料数量。 */
+/** 顺序上传支持的文件，累计成功、失败和不支持格式的跳过数量。 */
 export async function uploadFiles(
   base: string,
   files: File[],
@@ -83,11 +83,13 @@ export async function uploadFiles(
     onProgress({ ...batch, errors: [...batch.errors] }, doc);
   publish();
   for (const file of supported) {
+    // 展示相对目录供定位，但请求只传 file.name；不会把用户本机目录当作服务器存储路径。
     batch.current = file.webkitRelativePath || file.name;
     publish();
     try {
       const doc = await uploadFile(base, file, csrf);
       batch.uploaded += 1;
+      // 此处“成功”仅表示资料已被接受；解析和索引状态由文档轮询独立追踪。
       batch.completed += 1;
       publish(doc);
     } catch (error) {

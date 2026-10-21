@@ -155,6 +155,11 @@ def test_frozen_version_prompt_and_idempotency(client: TestClient):
         def stream(self, messages, tools, max_tokens):
             """检查旧版本完整注入而未加载目录中其他技能。"""
             observed.append((messages, tools))
+            if tools == ["delegate_task"] and messages[-1]["role"] != "tool":
+                yield ModelEvent("reply", reply=Reply(calls=[ToolCall(
+                    id="delegate", name="delegate_task", arguments={"task": "执行所选技能"},
+                )]))
+                return
             yield ModelEvent("text", text="离线技能验证")
             yield ModelEvent("reply", reply=Reply())
 
@@ -164,8 +169,9 @@ def test_frozen_version_prompt_and_idempotency(client: TestClient):
     result = client.get(f"/api/v1/runs/{task['id']}").json()
     assert result["status"] == "succeeded", result
     assert result["skill"]["version_id"] == skill["version_id"]
-    assert observed[0][1] == ["text_stats"]
-    context = str(observed[0][0])
+    assert observed[0][1] == ["delegate_task"]
+    assert observed[1][1] == ["text_stats", "list_knowledge_bases", "knowledge_search"]
+    context = str(observed[1][0])
     assert "先统计文本" in context and "不会进入原任务" not in context
     assert "instructions" not in result["skill"]
     assert '"stage":"skill"' in client.get(task["events_url"]).text.replace(" ", "")
@@ -182,7 +188,12 @@ def test_tool_intersection_blocks_forged_call(client: TestClient):
 
         def stream(self, messages, tools, max_tokens):
             """无工具授权时仍提出统计调用，用于验证服务端执行边界。"""
-            assert tools == []
+            if tools == ["delegate_task"]:
+                yield ModelEvent("reply", reply=Reply(calls=[ToolCall(
+                    id="delegate", name="delegate_task", arguments={"task": "执行所选技能"},
+                )]))
+                return
+            assert tools == ["list_knowledge_bases", "knowledge_search"]
             yield ModelEvent(
                 "reply",
                 reply=Reply(

@@ -27,6 +27,7 @@ class MilvusClient:
                 json={"dbName": self.settings.milvus_database, **payload},
             )
             response.raise_for_status()
+            # HTTP 200 仅代表协议成功，下面还要检查 Milvus 自己的 code 和返回结构。
             result: object = response.json()
         if (
             not isinstance(result, dict)

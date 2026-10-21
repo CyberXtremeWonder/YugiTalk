@@ -28,6 +28,7 @@ export function ToolChoices({
     };
   }, [accountId]);
   const choices = [
+    // 目录项之外还保留草稿中的旧名称，让用户能主动撤销已删除工具的授权。
     ...catalog.map((item) => ({
       name: item.name,
       title:

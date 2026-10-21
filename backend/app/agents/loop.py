@@ -82,6 +82,7 @@ def run_closed_loop(
         "loop": {"plan": [], "revision": 0},
     }
     phase = node if resume else "plan"
+    # phase 是下一步要执行的阶段；恢复任务沿用检查点，新任务从制定计划开始。
     loop = state["loop"]
 
     def persist(next_phase: str) -> None:
@@ -117,6 +118,7 @@ def run_closed_loop(
         )
         update("tool_status", {"stage": "agent_" + kind, "status": "running"}, 0)
         control_state: Any = {**state, "messages": context, "text": "", "calls": []}
+        # 规划和检查也消耗模型步数与 Token，但禁用工具，且不把控制 JSON 发给用户。
         result = run_graph(
             settings,
             config.model_copy(update={"tools": []}),
@@ -140,6 +142,7 @@ def run_closed_loop(
             raise ProviderFailure("agent_control_invalid") from error
 
     while phase != "done":
+        # 阶段前后均保存状态；中断恢复时能知道应该继续规划、执行还是检查。
         update(None, None, 0)
         persist(phase)
         if phase in {"plan", "revise"}:
@@ -179,6 +182,7 @@ def run_closed_loop(
         elif phase in {"model", "tools"}:
 
             def save_execution(result: Any, next_node: str) -> None:
+                # 普通图的 done 只代表候选答复生成完，闭环还要进入 reflect 验证。
                 if save:
                     save(result, "reflect" if next_node == "done" else next_node)
 
@@ -209,12 +213,14 @@ def run_closed_loop(
                 "gaps 仅给出简短事实缺口，不输出内部推理。",
             )
             successful = set()
+            # 不能只信模型宣称完成：检查引用的调用 ID 必须确实对应成功的工具结果。
             for message in state["messages"]:
                 if message.get("role") == "tool":
                     result = json.loads(message["content"])
                     if result.get("ok") is not False and not result.get("error"):
                         successful.add(message["tool_call_id"])
             expected = list(range(1, len(loop["plan"]) + 1))
+            # 检查必须逐一覆盖计划步骤，不能漏项、重复，也不能引用虚构的工具证据。
             if sorted(check.step for check in review.checks) != expected:
                 raise ProviderFailure("agent_control_invalid")
             verified = all(
@@ -255,6 +261,7 @@ def run_closed_loop(
             if passed:
                 phase = "done"
             elif review.decision == "unable" or loop["revision"] >= 1:
+                # 最多修订一次；仍未达标时返回明确的未完成结果，避免无限规划与执行。
                 state["text"] = "任务未完成：" + "；".join(review.gaps or ["完成标准尚未满足"])
                 loop["failure"] = "agent_incomplete"
                 phase = "done"

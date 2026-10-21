@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.accounts.access import AccountId, membership
 from app.agents.contracts import AgentConfig, effective_config
+from app.agents.model_config import cipher, public_config
 from app.agents.models import Agent, AgentVersion
 from app.audit.service import audit
 from app.core.config import Settings
@@ -54,6 +55,7 @@ def list_agents(
         .limit(limit + 1)
     )
     items = []
+    # 目录展示每个助手的最新版本；任务引用具体 version_id，因此不会随目录更新而漂移。
     for agent in agents:
         version = db.scalar(
             select(AgentVersion)
@@ -68,7 +70,7 @@ def list_agents(
                     "name": agent.name,
                     "version_id": version.id,
                     "number": version.number,
-                    "config": effective_config(version.config),
+                    "config": public_config(effective_config(version.config)),
                 }
             )
     return page(items, limit)
@@ -84,8 +86,34 @@ def publish(
         db.scalar(select(func.max(AgentVersion.number)).where(AgentVersion.agent_id == agent.id))
         or 0
     ) + 1
-    config = data.model_dump()
-    config.update({"provider": settings.model_provider, "model": settings.model_id})
+    config = data.model_dump(exclude={"api_key", "provider", "model", "base_url"})
+    # 未指定提供商时使用服务器默认模型；独立配置时把连接参数与密钥密文写入版本。
+    if data.provider is None:
+        config.update({"provider": settings.model_provider, "model": settings.model_id})
+    else:
+        if not data.model:
+            raise HTTPException(422, detail="请填写模型名称")
+        config.update({"provider": data.provider, "model": data.model, "base_url": data.base_url})
+        if data.provider != "mock":
+            if not data.base_url or (
+                settings.app_env != "test" and not data.base_url.startswith("https://")
+            ):
+                raise HTTPException(422, detail="请填写 HTTPS 模型 URL")
+            key = data.api_key.get_secret_value().strip()
+            previous = db.scalar(
+                select(AgentVersion).where(AgentVersion.agent_id == agent.id)
+                .order_by(AgentVersion.number.desc()).limit(1)
+            )
+            if key:
+                # 空密钥仅在提供商和 URL 不变时复用旧值，避免把旧凭证发送给另一个地址。
+                config["api_key_encrypted"] = cipher(settings).encrypt(key.encode()).decode()
+            elif previous and (
+                previous.config.get("provider") == data.provider
+                and previous.config.get("base_url") == data.base_url
+            ):
+                config["api_key_encrypted"] = previous.config.get("api_key_encrypted", "")
+            if not config.get("api_key_encrypted"):
+                raise HTTPException(422, detail="请填写模型 API Key")
     version = AgentVersion(agent_id=agent.id, number=number, config=config)
     agent.name = data.name
     db.add(version)
@@ -121,7 +149,7 @@ def publish_version(
     version = publish(request, db, agent, data, actor.user.id)
     audit(db, actor.user, "agent.publish", agent.account_id, version.id)
     db.commit()
-    return {"id": version.id, "number": version.number, "config": version.config}
+    return {"id": version.id, "number": version.number, "config": public_config(version.config)}
 
 
 @router.delete("/agents/{agent_id}", status_code=204)
@@ -137,6 +165,7 @@ def delete_agent(agent_id: UUID, db: DB, actor: Writer) -> Response:
         raise HTTPException(404)
     membership(db, agent.account_id, actor.user.id, manage=True)
     agent.deleted = True
+    # 软删除只关闭目录入口，历史任务仍能读取它所引用的不可变版本。
     audit(db, actor.user, "agent.delete", agent.account_id, agent.id)
     db.commit()
     return Response(status_code=204)

@@ -73,6 +73,7 @@ def remove_conversation(conversation_id: UUID, db: DB, actor: Writer) -> None:
     if db.scalar(select(Run.id).where(Run.conversation_id == key, Run.status.in_(ACTIVE)).limit(1)):
         raise HTTPException(409)
     run_ids = select(Run.id).where(Run.conversation_id == key)
+    # 活动任务已在上面拦截；按子记录到父记录的顺序清理，防止关联数据残留。
     from app.observability.trace_models import TraceStep
 
     db.execute(delete(TraceStep).where(TraceStep.run_id.in_(run_ids)))
@@ -95,6 +96,7 @@ def list_messages(
     """验证对话所有权后按消息序号分页读取历史。"""
     key = str(conversation_id)
     owned_conversation(db, key, actor)
+    # 消息按会话内序号续页，比按时间翻页更明确；多取一条只用于判断是否还有下一页。
     rows = db.scalars(
         select(Message)
         .where(Message.conversation_id == key, Message.sequence > cursor)

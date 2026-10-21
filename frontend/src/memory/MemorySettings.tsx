@@ -59,6 +59,7 @@ export function MemorySettings({
     try {
       await identityRequest(route, method, body, identity.csrf_token);
       await refresh();
+      // 以服务器返回的开关和列表为准，成功后清空草稿及确认标记，避免复用上次确认。
       setContent("");
       setEditing(null);
       setConfirmed(false);
@@ -84,6 +85,7 @@ export function MemorySettings({
           disabled={busy}
           onChange={(event) => {
             const previous = enabled;
+            // 开关先即时响应点击；请求失败则通过 rollback 恢复旧值。
             const next = event.target.checked;
             setEnabled(next);
             void mutate(

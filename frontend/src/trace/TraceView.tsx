@@ -58,6 +58,7 @@ function StepRow({
   total: number;
 }) {
   const children = steps.filter((item) => item.parent_id === step.id);
+  // 服务端返回平铺节点，按 parent_id 递归组成执行批次、模型循环与工具调用树。
   const label =
     step.kind === "loop"
       ? `LOOP ${step.iteration}`
@@ -141,6 +142,7 @@ export function TraceView() {
         const page = await fetchTraces();
         if (active) {
           setRuns((previous) =>
+            // 暂停翻页时保留已加载的旧任务，只替换本次首页覆盖的条目。
             paused
               ? [
                   ...page.items,
@@ -213,6 +215,7 @@ export function TraceView() {
       )
     : start;
   const total = Math.max(1, end - start);
+  // 时间轴取最早开始至最晚结束，父子步骤时间重叠，不能把它们的耗时相加。
   return (
     <section
       className="secondary-view trace-view"

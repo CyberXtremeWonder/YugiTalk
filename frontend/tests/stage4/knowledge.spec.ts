@@ -21,6 +21,7 @@ test("真实 BGE-M3 导入、去重、检索、引用与删除传播", async ({ 
   test.setTimeout(120000);
   await page.goto("/#agents");
   await page.getByLabel("助手名称").fill("知识问答验收");
+  await page.getByLabel("单次任务预算（保守额度）").fill("100000");
   await page.getByRole("button", { name: "创建助手", exact: true }).click();
   await expect(page.getByRole("status")).toContainText("版本发布成功");
   await page.getByRole("button", { name: "知识库", exact: true }).click();
@@ -54,8 +55,10 @@ test("真实 BGE-M3 导入、去重、检索、引用与删除传播", async ({ 
   await page
     .getByLabel("选择助手")
     .selectOption({ label: "知识问答验收 · v1 · mock" });
-  await page.getByLabel("对话知识库").selectOption({ label: "验收知识库" });
-  await page.getByLabel("任务输入").fill("向量数据保存在哪个数据库？");
+  await expect(page.getByLabel("对话知识库")).toHaveCount(0);
+  await page
+    .getByLabel("任务输入")
+    .fill("根据验收知识库，向量数据保存在哪个数据库？");
   await page.getByRole("button", { name: "发送任务", exact: true }).click();
   await expect(page.locator(".run-status")).toContainText("任务完成", {
     timeout: 60000,
@@ -73,7 +76,10 @@ test("真实 BGE-M3 导入、去重、检索、引用与删除传播", async ({ 
   await page.reload();
   await page
     .locator(".history")
-    .getByRole("button", { name: "向量数据保存在哪个数据库？", exact: true })
+    .getByRole("button", {
+      name: "根据验收知识库，向量数据保存在哪个数据库？",
+      exact: true,
+    })
     .click();
   await expect(page.locator(".message.assistant .source-list")).toContainText(
     "部署指南.md",

@@ -54,11 +54,16 @@ export async function readEvents(
   let sequence = 0;
   for (let attempt = 0; attempt < 4 && !signal.aborted; attempt++) {
     try {
-      const response = await monitoredFetch(run.events_url, {
-        credentials: "same-origin",
-        signal,
-        headers: cursor ? { "Last-Event-ID": cursor } : {},
-      });
+      // 重连只补读游标之后的事件；后台任务不会随这条 HTTP 连接重新执行。
+      const separator = run.events_url.includes("?") ? "&" : "?";
+      const response = await monitoredFetch(
+        `${run.events_url}${separator}types=text_delta,tool_status`,
+        {
+          credentials: "same-origin",
+          signal,
+          headers: cursor ? { "Last-Event-ID": cursor } : {},
+        },
+      );
       if (!response.ok || !response.body)
         throw new Error(
           response.status === 410
@@ -67,6 +72,7 @@ export async function readEvents(
         );
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
+      // 网络分块与 SSE 事件边界无关：一个事件可能跨多个 chunk，需攒到空行才解析。
       let buffer = "";
       try {
         for (;;) {
@@ -86,12 +92,15 @@ export async function readEvents(
               .map((line) => line.slice(6))
               .join("\n");
             if (!data || !id) continue;
+            // 心跳没有业务数据，会在上面被跳过；重复序号也不能再次追加到页面。
             const event: RunEvent = JSON.parse(data);
             if (!Number.isInteger(event.sequence) || event.sequence <= sequence)
               continue;
-            consume(event);
+            if (event.type !== "cursor") consume(event);
+            // 页面成功处理后才推进游标，下一次重连从这里继续。
             sequence = event.sequence;
             cursor = id;
+            // 重试任务可能复用旧事件；只有读到本次已知位置之后的结束事件才停止。
             if (
               (event.type === "completed" ||
                 event.type === "error" ||
@@ -112,6 +121,7 @@ export async function readEvents(
       if (attempt === 3) throw failure;
     }
     if (attempt === 3) throw new Error("事件流中断，请重新打开会话继续查看。");
+    // 逐次延长重连间隔；离开页面时通过 abort 提前结束等待。
     await new Promise<void>((resolve) => {
       /** 结束重连等待并注销取消监听，避免残留定时器。 */
       const finish = () => {

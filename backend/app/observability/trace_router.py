@@ -54,6 +54,7 @@ def list_traces(
         if boundary is None:
             raise HTTPException(404)
         query = query.where(
+            # 创建时间相同时用 ID 打破平局，续页既不漏项也不重复返回边界任务。
             (Run.created_at < boundary.created_at)
             | ((Run.created_at == boundary.created_at) & (Run.id < boundary.id))
         )
@@ -82,6 +83,7 @@ def trace_detail(run_id: UUID, actor: Actor, db: DB) -> dict[str, object]:
     sampled = now()
     steps = []
     for row in rows:
+        # Worker 异常退出可能来不及结束步骤；结合尝试次数和租约推断中断，但不伪造结束时间。
         interrupted = row.status == "running" and (
             row.attempt < run.attempts
             or run.status not in ("running", "queued")

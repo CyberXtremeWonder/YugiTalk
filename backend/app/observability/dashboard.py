@@ -38,6 +38,7 @@ class LiveRequests:
         minute = int(stamp // 60)
         with self.lock:
             self.buckets = {key: value for key, value in self.buckets.items() if key >= minute - 14}
+            # 每分钟只累计路由级计数和耗时，不保存所有请求；锁保护并发写入与快照读取。
             row = self.buckets.setdefault(minute, {}).setdefault(
                 (method, route),
                 {
@@ -75,6 +76,7 @@ class LiveRequests:
         trend = []
         with self.lock:
             for key in range(minute - 14, minute + 1):
+                # 没有流量的分钟也输出零值，前端时间轴才不会跳过空白时段。
                 rows = self.buckets.get(key, {})
                 trend.append(
                     {
@@ -152,6 +154,7 @@ def task_snapshot(db: Session, sampled: datetime) -> dict[str, Any]:
         )
     ).one()
     bucket = case(
+        # 用完成时间落入固定分钟桶；累计用量与最近十五分钟趋势使用不同统计范围。
         *[
             (Run.finished_at < boundary, index - 1)
             for index, boundary in enumerate(boundaries)

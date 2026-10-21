@@ -44,6 +44,7 @@ export function Login({
   }, []);
   useEffect(() => {
     if (!cooldown) return;
+    // 每秒更新重发倒计时，组件卸载或倒计时变化时撤销旧定时器；真正限流仍由服务端执行。
     const timer = window.setTimeout(
       () => setCooldown((value) => Math.max(0, value - 1)),
       1000,
@@ -90,6 +91,7 @@ export function Login({
     setError("");
     try {
       if (registering) {
+        // 注册只创建账号，成功后切回登录页；会话令牌仍由统一登录流程签发。
         await identityRequest("/auth/register", "POST", {
           email,
           name,

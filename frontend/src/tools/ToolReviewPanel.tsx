@@ -51,6 +51,7 @@ export function ToolReviewPanel({ identity }: { identity: Identity }) {
         identity.csrf_token,
       );
       setRows((items) => items.filter((item) => item.id !== row.id));
+      // 只有服务端成功提交结论后才移出待审列表，失败时保留条目供用户处理。
       setNotice(
         decision === "approved"
           ? "已批准，个人工具已绑定提交者，仍需配置与助手授权。"

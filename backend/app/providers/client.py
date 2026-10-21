@@ -107,6 +107,48 @@ class MockProvider:
                         last = message
                         content = str(last.get("content", ""))
                         break
+        if "delegate_task" in tools and content.strip() not in {"你好", "hi", "hello"}:
+            if last["role"] == "tool":
+                result = json.loads(content)
+                yield ModelEvent("text", text=str(result.get("summary", "执行助手未返回结果")))
+                yield ModelEvent("reply", reply=Reply())
+            else:
+                yield ModelEvent("reply", reply=Reply(calls=[ToolCall(
+                    id="mock-delegate", name="delegate_task", arguments={"task": content[:4000]},
+                )]))
+            return
+        if "knowledge_search" in tools:
+            if last["role"] == "user" and any(
+                word in content for word in ("知识库", "文档", "笔记", "公司", "资料")
+            ):
+                yield ModelEvent("reply", reply=Reply(calls=[ToolCall(
+                    id="mock-bases", name="list_knowledge_bases", arguments={},
+                )]))
+                return
+            if last["role"] == "tool" and isinstance(context, dict):
+                if "items" in context:
+                    rows = context["items"]
+                    if rows:
+                        question = str(next(
+                            message["content"] for message in reversed(messages)
+                            if message.get("role") == "user"
+                        ))
+                        base = next((row for row in rows if row["name"] in question), rows[0])
+                        yield ModelEvent("reply", reply=Reply(calls=[ToolCall(
+                            id="mock-search", name="knowledge_search",
+                            arguments={"knowledge_base_id": base["id"], "query": question[:2000]},
+                        )]))
+                    else:
+                        yield ModelEvent("text", text="当前没有可用的知识库。")
+                        yield ModelEvent("reply", reply=Reply())
+                    return
+                if "sources" in context:
+                    sources = context["sources"]
+                    text = ("Mock 知识库检索结果：" + sources[0]["content"][:500]
+                            if sources else "没有找到充分的知识库证据，请补充相关资料或问题。")
+                    yield ModelEvent("text", text=text)
+                    yield ModelEvent("reply", reply=Reply())
+                    return
         evidence = next(
             (
                 str(message.get("content", ""))
@@ -117,7 +159,8 @@ class MockProvider:
         )
         if evidence:
             sources = json.loads(evidence.split("\n", 1)[1])
-            text = "## Mock 知识库演示\n\n" + sources[0]["content"][:500] + " [S1]"
+            # 离线替身同样遵守来源卡片协议，不能用固定的虚构编号绕过引用校验。
+            text = "## Mock 知识库演示\n\n" + sources[0]["content"][:500]
             yield ModelEvent("text", text=text)
             yield ModelEvent("reply", reply=Reply())
             return
@@ -180,6 +223,7 @@ class HTTPProvider:
         self, messages: list[dict[str, Any]], tools: list[str], max_tokens: int
     ) -> dict[str, Any]:
         """根据模型协议组装消息、工具定义与输出上限。"""
+        # 图内部使用统一消息格式；OpenAI 兼容协议可直接接收，Anthropic 则需转换内容块。
         if self.provider == "openai_compatible":
             body: dict[str, Any] = {
                 "model": self.model,
@@ -263,6 +307,7 @@ class HTTPProvider:
             else {"x-api-key": key, "anthropic-version": "2023-06-01"}
         )
         body = self.request_body(messages, tools, max_tokens)
+        # 这里连接的是模型供应商的流；浏览器读取的是另外一条由数据库事件组成的 SSE 流。
         for attempt in range(self.settings.model_max_retries + 1):
             # 退避后的下一次请求仍需复核取消与权限，不能仅在首个请求前检查。
             self.guard()
@@ -300,6 +345,7 @@ class HTTPProvider:
                 failure = error
             except (ValueError, KeyError, TypeError, IndexError):
                 raise ProviderFailure("model_protocol") from None
+            # 已经产出任何事件就不能自动重发整次请求，否则上层会收到重复文本或工具提案。
             if (
                 published
                 or failure.code not in {"model_transient", "model_timeout_or_network"}
@@ -364,6 +410,7 @@ class HTTPProvider:
                     if delta.get("content"):
                         yield text_event(delta["content"])
                     for call in delta.get("tool_calls", []):
+                        # 工具名与 JSON 参数也可能分片到达，按调用序号分别拼接，结束后再解析。
                         current = calls.setdefault(
                             call["index"], {"id": "", "name": "", "arguments": ""}
                         )
@@ -419,6 +466,7 @@ class HTTPProvider:
                 raise ProviderFailure("model_protocol")
         if reply.output_tokens is not None and reply.output_tokens > max_tokens:
             raise ProviderFailure("model_output_limit")
+        # 只有确认流正常结束后才构造完整工具调用，执行图不会执行半截 JSON 参数。
         reply.calls = [
             ToolCall(
                 id=value["id"], name=value["name"], arguments=json.loads(value["arguments"] or "{}")
@@ -427,6 +475,7 @@ class HTTPProvider:
         ]
         if len({call.id for call in reply.calls}) != len(reply.calls):
             raise ProviderFailure("model_protocol")
+        # 文本在读取过程中已逐块返回；最后的 reply 只汇总工具调用和供应商用量。
         yield ModelEvent("reply", reply=reply)
 
 

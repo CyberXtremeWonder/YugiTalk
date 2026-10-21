@@ -49,6 +49,7 @@ def authenticated(request: Request, db: DB) -> Principal:
         raise HTTPException(401)
     settings: Settings = request.app.state.settings
     session = db.get(
+        # 浏览器持有随机令牌，数据库仅存带服务端密钥的摘要；查库时重新派生。
         LoginSession, digest(settings.session_secret.get_secret_value(), "session", token)
     )
     if session is None:
@@ -59,6 +60,7 @@ def authenticated(request: Request, db: DB) -> Principal:
     if expires <= now():
         raise HTTPException(401)
     user = db.get(User, session.user_id)
+    # 每次请求都重查用户状态，停用账号后已有 Cookie 也不能继续访问。
     if user is None or not user.active:
         raise HTTPException(401)
     return Principal(user, session, token)
@@ -72,6 +74,7 @@ def csrf_actor(request: Request, actor: Actor) -> Principal:
     origin_guard(request)
     settings: Settings = request.app.state.settings
     expected = digest(settings.session_secret.get_secret_value(), "csrf", actor.token)
+    # Cookie 会被浏览器自动发送，额外的来源与 CSRF 请求头证明写入来自受信任页面。
     if not hmac.compare_digest(expected.encode(), request.headers.get("X-CSRF-Token", "").encode()):
         raise HTTPException(403)
     return actor

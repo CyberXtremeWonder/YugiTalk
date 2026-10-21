@@ -54,6 +54,8 @@ class StructuredModel:
             ),
             "grade": (
                 "只根据所给证据评判整个问题。answer必须强相关且充分；"
+                "强相关但仅覆盖部分问题时使用partial_answer，保留来源并限定回答范围；"
+                "partial_answer必须为relevance=strong、answerability=partial、ambiguity=none。"
                 "区分问题歧义与证据不足：只有用户缺少会实质改变答案的对象、版本等关键条件，"
                 "且无法根据问题和证据确定时，才标记missing_slot或multiple_candidates并clarify。"
                 "资料未覆盖、证据不完整、开放式列举未穷尽，不属于问题歧义，应标记ambiguity=none；"
@@ -96,6 +98,7 @@ class StructuredModel:
         if remaining <= 0:
             raise ProviderFailure("rag_deadline")
         role_key = (
+            # 评判与快速调用可使用不同密钥；未设置角色密钥时沿用任务模型凭证。
             self.settings.rag_grader_api_key
             if purpose == "grade"
             else self.settings.rag_fast_api_key
@@ -167,6 +170,7 @@ class StructuredModel:
                             raise ProviderFailure("model_stream_size_limit")
                         lines.append(line)
             events = list(provider.decode(iter(lines), output_tokens))
+            # 结构化调用收集完整结果后统一校验协议，控制 JSON 不进入聊天文本事件。
             for event in events:
                 if event.reply is not None:
                     request_step.usage(event.reply)
@@ -210,11 +214,13 @@ class StructuredModel:
             """使用原问题与安全校验反馈重新生成，不放宽结构或业务约束。"""
             nonlocal correction, reserve
             for correction in range(2):
+                # 格式纠正与网络重试分开计数：只允许一次结构纠正，且仍受同一总超时约束。
                 raw = await bounded_request()
                 try:
                     return schema.model_validate_json(raw)
                 except ValidationError as error:
                     errors = [
+                        # 只反馈字段路径与错误类型，不回传可能包含资料或凭证的原始失败值。
                         {"type": item["type"], "loc": item["loc"]}
                         for item in error.errors(include_input=False, include_context=False)
                     ]

@@ -58,6 +58,7 @@ class Reranker:
             raise ValueError("rerank_configuration_invalid")
         with _lock:
             breaker = _breakers.setdefault(self.key, Breaker())
+            # 冷却结束只放行一个探测请求，其余请求继续用原排名，避免同时冲击故障服务。
             if breaker.open_until:
                 if time.monotonic() < breaker.open_until or breaker.probing:
                     return candidates, "circuit_open"
@@ -90,6 +91,7 @@ class Reranker:
             if not isinstance(results, list) or len(results) != len(bounded):
                 raise ValueError("rerank_response_invalid")
             indices: set[int] = set()
+            # 返回项必须恰好覆盖输入候选一次，拒绝重复/越界索引及非法分数。
             scores = {}
             for row in results:
                 index, score = row.get("index"), row.get("relevance_score")
@@ -109,6 +111,7 @@ class Reranker:
             ]
             with _lock:
                 breaker.failures, breaker.open_until = 0, 0
+            # 未进入重排字数预算的尾部候选保留原顺序，避免重排服务缩小证据范围。
             return [*ranked, *candidates[len(bounded) :]], "applied"
         except (httpx.HTTPError, ValueError, RuntimeError, TimeoutError):
             with _lock:

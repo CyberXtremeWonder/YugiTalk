@@ -40,6 +40,7 @@ def rebuild_document(engine: Engine, settings: Settings, key: str) -> dict[str, 
         ]
         attach_parents(db, key, doc.index_version, parts)
         for start in range(0, len(chunks), 16):
+            # 模型语义未变，只迁移集合结构；复用原向量并补齐文本字段，无需重新嵌入。
             batch = chunks[start : start + 16]
             result = store.request(
                 "entities/query",
@@ -101,6 +102,7 @@ def rebuild_document(engine: Engine, settings: Settings, key: str) -> dict[str, 
         ) != len(chunks):
             raise ValueError("document_rebuild_manifest_invalid")
         doc.collection_name = embedding.collection
+        # SQL 指针切换是发布点；在这之前查询仍使用旧集合，候选写入不会提前暴露。
         doc.chunk_strategy = "leaf700-parent3-native-bm25-jieba-v2"
         db.commit()
         return {

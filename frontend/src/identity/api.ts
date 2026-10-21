@@ -29,6 +29,7 @@ export async function allItems<T>(path: string): Promise<T[]> {
         `${path}?limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
       );
     items.push(...page.items);
+    // 当前页消费后再更新游标；重复游标意味着服务端没有向前推进，必须停止续页。
     cursor = page.next_cursor;
     if (cursor && seen.has(cursor))
       throw new Error("列表游标无效，请刷新页面。");
@@ -69,6 +70,7 @@ export async function identityRequest<T>(
     throw new ApiError(0, "连接已中断，请检查网络或 SSH 隧道，然后重试。");
   }
   if (!response.ok) {
+    // 先按 HTTP 状态提供通用提示，再用白名单中的业务码细化；不直接展示响应正文。
     let message =
       response.status === 401
         ? path === "/auth/login"
@@ -246,9 +248,11 @@ export async function identityRequest<T>(
       path !== "/auth/login" &&
       path !== "/auth/me"
     )
+      // 业务请求发现会话失效时通知 App；登录与首次身份探测由各自页面处理，避免重复提示。
       window.dispatchEvent(new Event("session-expired"));
     throw new ApiError(response.status, message);
   }
+  // 删除、退出等接口没有响应正文，不能继续按 JSON 解析。
   if (response.status === 204) return undefined as T;
   try {
     return (await response.json()) as T;

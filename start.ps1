@@ -22,8 +22,12 @@ try {
     docker compose config --quiet
     if ($LASTEXITCODE -ne 0) { throw '开发配置检查失败，请检查 .env。' }
 
-    Write-Output '构建并启动前端、后端及依赖，首次运行可能需要较长时间……'
-    docker compose up --build -d --wait --wait-timeout 600
+    Write-Output '第一步：构建镜像，下面会显示依赖下载进度；首次构建可能需要几分钟……'
+    docker compose --progress plain build
+    if ($LASTEXITCODE -ne 0) { throw '镜像构建失败，请查看上方具体下载或安装错误。' }
+
+    Write-Output '第二步：启动服务并等待健康检查……'
+    docker compose up -d --wait --wait-timeout 600
     if ($LASTEXITCODE -ne 0) {
         throw '启动失败，请执行 docker compose logs --tail 100 migrate api worker scheduler frontend 查看原因。'
     }

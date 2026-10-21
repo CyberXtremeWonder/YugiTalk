@@ -21,6 +21,8 @@
 .\start.ps1
 ```
 
+启动分为镜像构建和服务启动两步，构建时显示完整依赖下载日志。首次下载可能持续数分钟；后端 pip 下载使用构建缓存，中断后重试可复用已下载内容。未改依赖时后续构建通常复用整个安装层。
+
 此入口直接使用 Docker Compose，不依赖 WSL 或 Bash，已存在的 `.env` 和数据继续保留，启动结果与下方 `.sh` 一致。
 
 PowerShell 中裸写 `bash` 可能调用系统 WSL；如果出现 `execvpe(/bin/bash) failed`，表示 WSL 缺少 Bash，尚未执行项目脚本。此时使用 `start.ps1`，或在已安装的 Git Bash 终端中运行 `bash start.sh`，无需为启动项目安装 WSL。
@@ -206,3 +208,12 @@ docker compose down
 ```
 
 清理保留虚拟环境、已有 BGE-M3 缓存、业务数据、现用镜像和回退资产。七步 RAG 的配置、旧索引升级与验收见 [实现与验收](./ENHANCED_RAG.md)。
+
+
+## 数据集缓存位置
+
+2026-10-19 将原 `C:\Users\xwChen\.cache\huggingface\datasets` 中的数据集语料迁入项目的 `.cache/huggingface/datasets/`（当前为 `E:\Code\YugiTalk\.cache\huggingface\datasets`）。C 盘旧路径保留目录联接，兼容历史缓存中的绝对路径；实际语料只存放在 E 盘，读取旧路径不会重新占用 C 盘存储。
+
+`. ./scripts/set-project-cache.ps1` 会设置当前终端的 `HF_DATASETS_CACHE`；`backend/get_huggingface_data.py` 也显式使用项目缓存路径。迁移包含原始下载、解压结果及 Arrow 语料，逐文件校验大小和 SHA-256 后才清理 C 盘原件。不会改变模型权重缓存位置。
+
+迁移校验清单位于 `.cache/huggingface/datasets-migration.json`。清理 C 盘时不要递归清空旧路径下的内容，它指向 E 盘语料；如需取消兼容路径，应只移除目录联接本身。

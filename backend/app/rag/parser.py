@@ -58,10 +58,12 @@ def parse(content: bytes, suffix: str, strategy: str = "fixed") -> list[dict[str
                 if match.start() > 0
             ]
         boundaries.append(len(text))
+        # Markdown 先按标题划分章节，再在章节内切块；普通文本/每页 PDF 则视作一段。
         for section, (begin, end) in enumerate(zip(boundaries, boundaries[1:], strict=False)):
             section_text = text[begin:end].strip()
             stop = len(section_text) if strategy == "fixed" else max(1, len(section_text) - 100)
             for start in range(0, stop, 600):
+                # 每块 700 字、步长 600，保留最多 100 字交叠，减少边界切断语义的影响。
                 part = section_text[start : start + 700].strip()
                 if part:
                     chunk: dict[str, object] = {

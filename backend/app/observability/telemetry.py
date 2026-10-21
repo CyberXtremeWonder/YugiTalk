@@ -47,6 +47,7 @@ class Telemetry:
             sampler=ParentBased(TraceIdRatioBased(settings.otel_sample_ratio)),
         )
         if settings.otel_exporter_otlp_endpoint:
+            # 导出由有界批处理队列异步完成，业务请求不逐条等待追踪服务器响应。
             session = requests.Session()
             session.trust_env = False
             exporter = OTLPSpanExporter(

@@ -1,9 +1,15 @@
+from pathlib import Path
+
 import datasets
+
+# 显式使用项目磁盘的语料缓存，不依赖启动终端是否加载环境变量。
+cache_dir = Path(__file__).resolve().parents[1] / ".cache/huggingface/datasets"
 lang = 'zh'  # or any of the 16 languages
 miracl = datasets.load_dataset(
     'miracl/miracl',
     lang,
     trust_remote_code=True,
+    cache_dir=str(cache_dir),
 )
 
 # training set:

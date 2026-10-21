@@ -50,6 +50,7 @@ export async function monitoredFetch(
     throw error;
   }
   const record = {
+    // fetch 在响应头到达时结束，这里的耗时不是 SSE 全文生成时间；不读取或复制响应正文。
     operation: "http.request",
     route,
     method,

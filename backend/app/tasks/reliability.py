@@ -96,6 +96,7 @@ class LeaseKeeper(AbstractContextManager["LeaseKeeper"]):
     def renew(self) -> None:
         """定期验证并续期租约，在失去所有权时停止维护。"""
         while not self.stopped.wait(self.settings.run_lease_seconds / 3):
+            # 续租周期短于租约寿命；只有当前令牌且尚未过期才可延长，旧 Worker 不能复活。
             try:
                 with Session(self.engine) as db:
                     row = cast(
@@ -141,6 +142,7 @@ def prepare_bound_tool(
     arguments = call.arguments
     digest = fingerprint(call.name, arguments)
     call_key = f"{step}:{call.id}"
+    # 同一任务中的模型步数与调用 ID 确定账本条目，参数哈希另行防止同 ID 换参数。
     item = db.scalar(
         select(ToolExecution).where(
             ToolExecution.run_id == run.id, ToolExecution.call_key == call_key
@@ -222,6 +224,7 @@ def sweep(
         )
     for key in keys:
         failure = None
+        # 先筛选候选 ID，再逐条短事务加锁；多个调度器跳过对方正在处理的任务。
         with Session(engine) as db:
             run = db.scalar(select(Run).where(Run.id == key).with_for_update(skip_locked=True))
             if not run or run.status not in {
@@ -240,6 +243,7 @@ def sweep(
             elif run.status == "waiting_input":
                 failure = "rag_clarification_expired"
             elif run.status == "running":
+                # 租约到期才允许接管；保留已有检查点，重排队后从已提交的边界恢复。
                 if run.lease_until and utc(run.lease_until) > now():
                     continue
                 stop_slice(run)
@@ -299,6 +303,7 @@ def sweep(
     for key in keys:
         with Session(engine) as db:
             doc = db.scalar(
+                # 文档恢复单独处理，其代数递增可隔离跨存储遗留的旧向量写入。
                 select(Document).where(Document.id == key).with_for_update(skip_locked=True)
             )
             if not doc or doc.status not in {"queued", "parsing", "indexing", "deleting"}:

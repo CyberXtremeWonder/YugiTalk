@@ -14,5 +14,7 @@ export interface Agent {
     timeout_seconds: number;
     provider: string;
     model: string;
+    base_url?: string;
+    has_api_key?: boolean;
   };
 }

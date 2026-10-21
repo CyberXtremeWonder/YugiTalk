@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-test("增强 RAG 在同一任务中澄清恢复并核验来源", async ({ page }) => {
+test("旧客户端增强 RAG 在同一任务中澄清恢复并核验来源", async ({ page }) => {
   test.skip(
     !process.env.E2E_RAG_EMAIL,
     "请通过 run-enhanced-rag-ui.py 初始化独立 RAG 验收账号",
@@ -19,16 +19,15 @@ test("增强 RAG 在同一任务中澄清恢复并核验来源", async ({ page }
     Origin: "https://localhost:18443",
     "X-CSRF-Token": identity.csrf_token,
   };
-  const space = identity.workspaces[0].id;
-  const agent = await page.request.post(`/api/v1/workspaces/${space}/agents`, {
+  const agent = await page.request.post("/api/v1/me/agents", {
     headers,
     data: { name: "增强 RAG 验收", tools: [], token_budget: 100000 },
   });
   expect(agent.ok()).toBeTruthy();
-  const created = await page.request.post(
-    `/api/v1/workspaces/${space}/knowledge-bases`,
-    { headers, data: { name: `RAG-${nonce}` } },
-  );
+  const created = await page.request.post("/api/v1/me/knowledge-bases", {
+    headers,
+    data: { name: `RAG-${nonce}` },
+  });
   expect(created.ok()).toBeTruthy();
   const base = (await created.json()).id;
   const uploaded = await page.request.post(
@@ -55,14 +54,32 @@ test("增强 RAG 在同一任务中澄清恢复并核验来源", async ({ page }
     .toBe("ready");
   await page.reload();
   await expect(page.locator("#prompt")).toBeVisible();
-  await page.getByLabel("对话知识库", { exact: true }).selectOption(base);
-  await page.locator("#prompt").fill("它的 Milvus 用途是什么？");
-  await page.getByRole("button", { name: "发送任务", exact: true }).click();
+  await expect(page.getByLabel("对话知识库", { exact: true })).toHaveCount(0);
+  // 手动指定知识库仅保留旧 API 兼容测试，聊天界面不再提供选择器。
+  const conversation = await page.request.post("/api/v1/me/conversations", {
+    headers,
+    data: { title: "它的 Milvus 用途是什么？" },
+  });
+  const conversationId = (await conversation.json()).id;
+  const queued = await page.request.post("/api/v1/runs", {
+    headers: { ...headers, "Idempotency-Key": crypto.randomUUID() },
+    data: {
+      conversation_id: conversationId,
+      agent_version_id: (await agent.json()).version_id,
+      knowledge_base_id: base,
+      message: "它的 Milvus 用途是什么？",
+    },
+  });
+  expect(queued.status()).toBe(202);
+  await page.reload();
+  await page
+    .getByRole("button", { name: "它的 Milvus 用途是什么？", exact: true })
+    .click();
   await expect(page.getByLabel("补充信息", { exact: true })).toBeVisible({
     timeout: 30000,
   });
   const runsBefore = await (
-    await page.request.get(`/api/v1/workspaces/${space}/runs`)
+    await page.request.get(`/api/v1/conversations/${conversationId}/runs`)
   ).json();
   const task = runsBefore.items.find(
     (row: { status: string }) => row.status === "waiting_input",
@@ -93,7 +110,7 @@ test("增强 RAG 在同一任务中澄清恢复并核验来源", async ({ page }
   await expect(page.locator(".source-preview").last()).toContainText("Milvus");
   await expect(page.locator(".source-preview").last()).toBeVisible();
   const runsAfter = await (
-    await page.request.get(`/api/v1/workspaces/${space}/runs`)
+    await page.request.get(`/api/v1/conversations/${conversationId}/runs`)
   ).json();
   expect(runsAfter.items.map((row: { id: string }) => row.id)).toEqual([
     task.id,

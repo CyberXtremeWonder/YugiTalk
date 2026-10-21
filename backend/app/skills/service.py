@@ -55,6 +55,7 @@ def freeze_skill(db: Session, version_id: str, workspace: str, user: str) -> dic
         raise HTTPException(409, detail={"code": "skill_unavailable"})
     assert version is not None
     snapshot = {
+        # 保存完整正文和版本指纹，而非执行时重新取最新版本，确保任务可复现。
         "id": skill.id,
         "version_id": version.id,
         "number": version.number,
@@ -76,6 +77,7 @@ def validate_pin(db: Session, pin: dict[str, Any], workspace: str) -> None:
         raise ProviderFailure("skill_unavailable")
     if (
         not version
+        # 同时比较快照字段与重算哈希，既发现任务快照漂移，也发现原版本被改写。
         or version.skill_id != skill.id
         or version.name != pin.get("name")
         or version.number != pin.get("number")

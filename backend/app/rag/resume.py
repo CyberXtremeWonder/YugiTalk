@@ -47,6 +47,7 @@ def clarify(
         json.dumps(data.model_dump(), sort_keys=True, ensure_ascii=False).encode()
     ).hexdigest()
     receipt = cast(dict[str, Any], run.snapshot.get("rag_resume_receipt", {}))
+    # 同一补充请求重发时直接返回原任务；不同内容复用同一个幂等键则拒绝。
     if receipt.get("key") == idempotency_key:
         if receipt.get("hash") != fingerprint:
             raise HTTPException(409)
@@ -85,6 +86,7 @@ def clarify(
     if request.app.state.settings.task_budget_enabled and run.charged_tokens >= run.reserved_tokens:
         raise HTTPException(429, detail={"code": "run_budget_insufficient"})
     question = str(state["question"])[:1000] + "\n补充：" + data.answer.strip()
+    # 保留次数与任务身份，清除旧证据并从检索重新开始，让补充条件真正影响召回。
     run.checkpoint = {
         "node": "rag",
         "rag": {

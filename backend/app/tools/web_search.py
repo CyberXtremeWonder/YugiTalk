@@ -91,6 +91,7 @@ def search_result(payload: object, max_results: int) -> dict[str, object]:
     if not isinstance(payload, dict) or not isinstance(payload.get("results"), list):
         return {"ok": False, "error_code": "tool_response_invalid"}
     results: list[dict[str, str]] = []
+    # 只投递合法来源和摘录给模型，不转发供应商的生成答案，也不再访问结果 URL。
     for row in payload["results"][:max_results]:
         if not isinstance(row, dict) or not (url := source_url(row.get("url"))):
             continue
@@ -105,6 +106,7 @@ def search_result(payload: object, max_results: int) -> dict[str, object]:
             "raw_content": clip(raw, 1300) if isinstance(raw, str) else "",
         }
         if len(json.dumps([*results, item], ensure_ascii=False).encode()) > 14000:
+            # 除单条截断外再限制总 JSON 字节数，给工具封装和其他上下文预留空间。
             break
         results.append(item)
     return {"ok": True, "source": "Tavily", "results": results}
