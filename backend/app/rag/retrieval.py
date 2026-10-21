@@ -24,7 +24,7 @@ def document_scope(
     if workspace != user or owner is None or not owner.active:
         raise ValueError("knowledge_permission_revoked")
     row = db.get(KnowledgeBase, base)
-    if row is None or row.account_id != workspace:
+    if row is None or row.deleted or row.account_id != workspace:
         raise ValueError("knowledge_unavailable")
     documents = list(
         db.scalars(

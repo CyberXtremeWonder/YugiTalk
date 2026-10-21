@@ -7,6 +7,8 @@ interface GraphData {
   error_code?: string;
   entity_count?: number;
   has_more?: boolean;
+  completed_chunks?: number;
+  total_chunks?: number;
   facts: {
     source: string;
     target: string;
@@ -96,13 +98,15 @@ export function GraphPanel({
             {data.entity_count !== undefined &&
               ` · ${data.entity_count} 个实体`}
           </p>
+          {["queued", "building"].includes(data.status) &&
+            data.total_chunks !== undefined && (
+              <p aria-live="polite">
+                已处理 {data.completed_chunks ?? 0}/{data.total_chunks} 个分块
+              </p>
+            )}
           {data.mode === "mock" && <p>当前为演示模式，未调用模型抽取关系。</p>}
           {data.status === "failed" && (
-            <p>
-              {data.error_code === "graph_document_limit"
-                ? "资料超过第一版图谱的 64 个分块上限，请拆分文件。"
-                : "图谱未构建成功，可检查模型服务后重试。普通知识问答仍可使用。"}
-            </p>
+            <p>图谱未构建成功，可检查模型服务后重试。普通知识问答仍可使用。</p>
           )}
           {!["queued", "building"].includes(data.status) && (
             <button disabled={busy} onClick={() => void rebuild()}>

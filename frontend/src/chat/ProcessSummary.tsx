@@ -122,9 +122,11 @@ export function ProcessSummary({
         </span>
       </summary>
       <ol>
-        {(steps.length ? steps : ["准备任务"]).map((step, index) => (
-          <li key={`${index}:${step}`}>{step}</li>
-        ))}
+        {[...new Set(steps.length ? steps : ["准备任务"])].map(
+          (step, index) => (
+            <li key={`${index}:${step}`}>{step}</li>
+          ),
+        )}
       </ol>
     </details>
   );

@@ -65,6 +65,7 @@ def run_closed_loop(
     node: str,
     save: "Callable[[AgentState, str], None] | None",
     tool_executor: Callable[[ToolCall, int], dict[str, object]] | None,
+    tool_batch_executor: Callable[[list[ToolCall], int], list[dict[str, object]]] | None = None,
 ) -> "AgentState":
     """复用原执行图及累计计数；每个阶段边界保存同一任务的检查点。"""
     from app.agents.graph import run_graph
@@ -199,6 +200,7 @@ def run_closed_loop(
                 save_execution,
                 tool_executor,
                 _control="execute",
+                tool_batch_executor=tool_batch_executor,
             )
             loop = state["loop"]
             phase = "reflect"

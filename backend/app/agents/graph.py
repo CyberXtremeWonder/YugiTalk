@@ -51,6 +51,7 @@ def run_graph(
     tool_executor: Callable[[ToolCall, int], dict[str, object]] | None = None,
     _control: str | None = None,
     _control_prompt: str = "",
+    tool_batch_executor: Callable[[list[ToolCall], int], list[dict[str, object]]] | None = None,
 ) -> AgentState:
     """两个节点形成有界循环；数据库负责取消、权限、事件和预算事实。"""
 
@@ -60,7 +61,7 @@ def run_graph(
 
         return run_closed_loop(
             settings, config, provider, messages, update, on_text, retries,
-            resume, node, save, tool_executor,
+            resume, node, save, tool_executor, tool_batch_executor,
         )
 
     def model(state: AgentState) -> AgentState:
@@ -69,11 +70,20 @@ def run_graph(
             save(state, "model")
         if state["step"] >= min(config.max_steps, settings.max_model_steps):
             raise ProviderFailure("model_step_limit")
+        # 最后一轮只做合成，避免调用后无轮次收尾。
+        finishing = (
+            _control in {None, "execute"} and state["step"] > 0
+            and state["step"] == min(config.max_steps, settings.max_model_steps) - 1
+        )
+        available_tools = [] if finishing else list(config.tools)
         # 输入字节数与工具 Schema 作为保守预留，不作为实际供应商 Token 用量。
         schemas = getattr(provider, "tool_schemas", TOOL_SCHEMAS)
         context_size = len(
             json.dumps(
-                {"messages": state["messages"], "tools": [schemas[name] for name in config.tools]},
+                {
+                    "messages": state["messages"],
+                    "tools": [schemas[name] for name in available_tools],
+                },
                 ensure_ascii=False,
             ).encode("utf-8")
         )
@@ -87,9 +97,12 @@ def run_graph(
         step_text = ""
         # 规划、检查等控制调用必须遵循其 JSON 契约，回答约束仅作用于正文生成。
         policy = evidence_policy(state["messages"]) if _control in {None, "execute"} else None
-        output_limit = min(config.max_output_tokens, 1024) if (
-            policy and policy["coverage"] != "sufficient"
-        ) else config.max_output_tokens
+        # 有证据的回答也保持有界；小预算只约束正文，不让内部思考吞掉全部输出额度。
+        output_limit = min(config.max_output_tokens, 2048) if policy else config.max_output_tokens
+        if finishing or (policy and policy["coverage"] != "sufficient"):
+            output_limit = min(output_limit, 1024)
+        if isinstance(provider, HTTPProvider):
+            provider.bounded_answer = bool(policy or finishing)
         # 约束在每轮请求前重算，工具返回空证据后不会沿用先前的引用要求。
         request_messages = [
             {key: value for key, value in message.items() if key != "rag_evidence"}
@@ -99,6 +112,13 @@ def run_graph(
             request_messages[0] = {
                 **request_messages[0],
                 "content": request_messages[0]["content"] + "\n" + answer_instruction(policy),
+            }
+        if finishing and _control in {None, "execute"}:
+            request_messages[0] = {
+                **request_messages[0],
+                "content": request_messages[0]["content"] + "\n"
+                "执行轮次预算已用尽，不再调用工具。仅用已有成功结果回答原问题，"
+                "明确说明尚未验证的内容；没有有效结果时简短说明限制，不编造结论。",
             }
 
         def publish(text: str) -> None:
@@ -119,7 +139,7 @@ def run_graph(
             ) as request_step:
                 try:
                     for event in provider.stream(
-                        request_messages, list(config.tools), output_limit
+                        request_messages, available_tools, output_limit
                     ):
                         if event.kind == "text":
                             # 普通模式边生成边发布；闭环模式先积累候选文本，检查后再公开。
@@ -143,6 +163,11 @@ def run_graph(
             validate_references(step_text, policy)
         if reply is None:
             raise ProviderFailure("model_protocol")
+        if finishing and reply.calls:
+            # 服务端已经撤去工具 Schema，模型仍提出调用时也绝不继续执行。
+            raise ProviderFailure("model_step_limit")
+        if any(call.name not in available_tools for call in reply.calls):
+            raise ProviderFailure("tool_not_authorized")
         if not reply.calls and not step_text.strip():
             raise ProviderFailure("model_empty_result")
         # 将模型提出的工具调用写入 assistant 消息，后续 tool 消息通过调用 ID 与它配对。
@@ -190,6 +215,7 @@ def run_graph(
             "messages": list(state["messages"]),
             "repetitions": dict(state["repetitions"]),
         }
+        batch_results: dict[int, dict[str, object]] = {}
         for cursor, call in enumerate(state["calls"]):
             # 恢复时跳过已写入图检查点的工具；未完成的调用仍需再次校验当前权限。
             if cursor < state["tool_cursor"]:
@@ -197,29 +223,43 @@ def run_graph(
             update(None, None, 0)
             if call.name not in config.tools:
                 raise ProviderFailure("tool_not_authorized")
-            if result_state["tool_count"] + 1 > min(config.max_tool_calls, settings.max_tool_calls):
-                raise ProviderFailure("tool_call_limit")
-            # 同一工具配同一参数累计最多调用两次，避免模型反复尝试同一操作而陷入循环。
+            # 检索重复查询由执行层复用结果；其他工具保留原有无进展保护。
             fingerprint = json.dumps(
                 {"name": call.name, "arguments": call.arguments}, sort_keys=True, ensure_ascii=False
             )
             count = result_state["repetitions"].get(fingerprint, 0) + 1
-            if count > 2:
+            if count > 2 and call.name != "knowledge_search":
                 raise ProviderFailure("no_progress")
             try:
-                with operation_span("tool." + call.name), trace_step(
-                    "tool", call.name, iteration=state["step"], call_id=call.id
-                ) as tool_step:
-                    result = (
-                        tool_executor(call, state["step"])
-                        if tool_executor
-                        else execute_tool(call.name, call.arguments)
-                    )
-                    tool_step.status = "failed" if result.get("ok") is False else "succeeded"
-                    if result.get("ok") is False:
-                        tool_step.details["error_code"] = str(
-                            result.get("error_code", "tool_failed")
+                if (
+                    tool_batch_executor and call.name == "knowledge_search"
+                    and cursor not in batch_results
+                ):
+                    end = cursor
+                    while (
+                        end < len(state["calls"])
+                        and state["calls"][end].name == "knowledge_search"
+                    ):
+                        end += 1
+                    if end - cursor > 1:
+                        results = tool_batch_executor(state["calls"][cursor:end], state["step"])
+                        batch_results.update(enumerate(results, cursor))
+                if cursor in batch_results:
+                    result = batch_results[cursor]
+                else:
+                    with operation_span("tool." + call.name), trace_step(
+                        "tool", call.name, iteration=state["step"], call_id=call.id
+                    ) as tool_step:
+                        result = (
+                            tool_executor(call, state["step"])
+                            if tool_executor
+                            else execute_tool(call.name, call.arguments)
                         )
+                        tool_step.status = "failed" if result.get("ok") is False else "succeeded"
+                        if result.get("ok") is False:
+                            tool_step.details["error_code"] = str(
+                                result.get("error_code", "tool_failed")
+                            )
                 succeeded = result.get("ok") is not False
                 update(
                     "tool_status",

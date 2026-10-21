@@ -90,8 +90,15 @@ def create_run(
         db, conversation.account_id, actor.user.id, config["tools"], settings
     )
     config["tools"] = list(config["tool_catalog"])
-    # 新对话由 Router 委派执行助手；显式指定知识库的旧客户端保留原路径。
+    # 自动知识库任务使用执行助手；显式指定知识库的旧客户端保留原路径。
     config["router_mode"] = not bool(data.knowledge_base_id)
+    from app.rag.pipeline import local_plan
+
+    # 短单意图问答直接执行；复杂任务、Skill 和闭环流程继续使用原委派路径。
+    config["direct_mode"] = bool(
+        config["router_mode"] and not config.get("closed_loop") and not config.get("skill")
+        and local_plan(data.message).complexity == "simple"
+    )
     if config["router_mode"]:
         from app.rag.contracts import freeze_rag_config
         from app.rag.embeddings import Embeddings
@@ -102,7 +109,7 @@ def create_run(
         from app.rag.models import KnowledgeBase
 
         base = db.get(KnowledgeBase, str(data.knowledge_base_id))
-        if base is None or base.account_id != conversation.account_id:
+        if base is None or base.deleted or base.account_id != conversation.account_id:
             raise HTTPException(404)
         config["knowledge_base_id"] = base.id
         from app.rag.contracts import freeze_rag_config

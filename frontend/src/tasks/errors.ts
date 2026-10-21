@@ -11,9 +11,11 @@ export function runError(code: string): string {
     agent_control_invalid: "模型未返回有效的计划或检查结果，请重新发送。",
     agent_checkpoint_invalid: "任务恢复状态无效，请重新创建任务。",
     model_step_limit: "已达到模型调用上限。规划、执行和检查均计入此上限。",
+    tool_call_limit:
+      "已达到工具调用上限，模型未能基于已有结果完成收尾，请缩小问题范围后重试。",
     token_budget_exhausted: "已达到任务预算，请调整预算或缩小任务范围。",
     model_output_limit:
-      "回复达到输出上限。请在 Agent 页提高每次输出 Token 上限并发布新版本后重试。",
+      "回复达到本次调用的 Token 上限，已保留部分内容。请缩小问题范围，或检查 Agent 输出配置并发布新版本；内部调用有独立上限。",
     model_incomplete: "模型响应提前结束，已保留部分内容，请重新发送。",
     model_stream_size_limit:
       "模型响应流超过大小保护上限，已保留部分内容，请缩小问题范围或检查流容量配置。",

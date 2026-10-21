@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import * as Dialog from "@radix-ui/react-dialog";
 import { allItems, identityRequest, type Identity } from "../identity/api";
 import { type Account } from "../accounts/api";
 import {
@@ -28,6 +29,8 @@ export function KnowledgeView({
   const [documents, setDocuments] = useState<Document[]>([]);
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<KnowledgeBase | null>(null);
+  const cancelDelete = useRef<HTMLButtonElement>(null);
   const [query, setQuery] = useState("");
   const [sources, setSources] = useState<Source[]>([]);
   const [uploadBatch, setUploadBatch] = useState<UploadBatch | null>(null);
@@ -166,6 +169,35 @@ export function KnowledgeView({
       setBusy(false);
     }
   }
+  /** 确认后删除当前知识库，并清空该库关联的页面状态。 */
+  async function deleteBase() {
+    const selected = deleteTarget;
+    if (!selected || busy) return;
+    setBusy(true);
+    setNotice("");
+    try {
+      await identityRequest(
+        `/knowledge-bases/${selected.id}`,
+        "DELETE",
+        undefined,
+        identity.csrf_token,
+      );
+      const remaining = bases.filter((row) => row.id !== selected.id);
+      setBases(remaining);
+      setBase(remaining[0]?.id || "");
+      setDocuments([]);
+      setSources([]);
+      setQuery("");
+      setUploadBatch(null);
+      setBatchDocumentIds([]);
+      setDeleteTarget(null);
+      setNotice("知识库已删除。");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "删除知识库失败");
+    } finally {
+      setBusy(false);
+    }
+  }
   const workflowDocuments = documents.filter(
     // 流程区优先展示本次上传涉及的文档，普通列表隐藏已撤销资料，清理失败另行提供重试入口。
     (doc) =>
@@ -224,28 +256,98 @@ export function KnowledgeView({
             <button disabled={busy}>创建知识库</button>
           </form>
         )}
-        <label>
-          当前知识库
-          <select
-            aria-label="当前知识库"
-            value={base}
-            disabled={busy}
-            onChange={(event) => {
-              setBase(event.target.value);
-              setSources([]);
-              setDocuments([]);
-              setUploadBatch(null);
-              setBatchDocumentIds([]);
-            }}
-          >
-            {!bases.length && <option value="">暂无知识库</option>}
-            {bases.map((row) => (
-              <option key={row.id} value={row.id}>
-                {row.name}
-              </option>
-            ))}
-          </select>
-        </label>
+        <div className="knowledge-base-selector">
+          <label>
+            当前知识库
+            <select
+              aria-label="当前知识库"
+              value={base}
+              disabled={busy}
+              onChange={(event) => {
+                setBase(event.target.value);
+                setSources([]);
+                setDocuments([]);
+                setUploadBatch(null);
+                setBatchDocumentIds([]);
+              }}
+            >
+              {!bases.length && <option value="">暂无知识库</option>}
+              {bases.map((row) => (
+                <option key={row.id} value={row.id}>
+                  {row.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          {manage && (
+            <Dialog.Root
+              open={deleteTarget !== null}
+              onOpenChange={(open) => {
+                if (busy) return;
+                setDeleteTarget(
+                  open ? (bases.find((row) => row.id === base) ?? null) : null,
+                );
+                if (open) setNotice("");
+              }}
+            >
+              <Dialog.Trigger asChild>
+                <button type="button" disabled={!base || busy}>
+                  删除知识库
+                </button>
+              </Dialog.Trigger>
+              <Dialog.Portal>
+                <Dialog.Overlay className="agent-confirm-backdrop" />
+                <Dialog.Content
+                  className="agent-confirm-dialog"
+                  onOpenAutoFocus={(event) => {
+                    event.preventDefault();
+                    cancelDelete.current?.focus();
+                  }}
+                  onEscapeKeyDown={(event) => {
+                    if (busy) event.preventDefault();
+                  }}
+                  onPointerDownOutside={(event) => {
+                    if (busy) event.preventDefault();
+                  }}
+                >
+                  <div className="agent-confirm-icon" aria-hidden="true">
+                    <svg
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.5"
+                    >
+                      <path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 10v7M14 10v7" />
+                    </svg>
+                  </div>
+                  <Dialog.Title className="agent-confirm-title">
+                    删除知识库
+                  </Dialog.Title>
+                  <Dialog.Description className="agent-confirm-description">
+                    确定删除知识库“{deleteTarget?.name}
+                    ”吗？库内所有文件也会被删除，此操作无法撤销。
+                  </Dialog.Description>
+                  {notice && <p role="alert">{notice}</p>}
+                  <div className="agent-confirm-actions">
+                    <Dialog.Close asChild>
+                      <button ref={cancelDelete} type="button" disabled={busy}>
+                        取消
+                      </button>
+                    </Dialog.Close>
+                    <button
+                      type="button"
+                      className="agent-confirm-delete"
+                      disabled={busy}
+                      onClick={() => void deleteBase()}
+                    >
+                      {busy ? "删除中…" : "确认删除"}
+                    </button>
+                  </div>
+                </Dialog.Content>
+              </Dialog.Portal>
+            </Dialog.Root>
+          )}
+        </div>
       </div>
       <div className="knowledge-columns">
         <section

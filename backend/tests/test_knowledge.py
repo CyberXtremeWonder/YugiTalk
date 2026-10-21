@@ -18,7 +18,7 @@ from app.memory.context import build_messages
 from app.memory.models import ConversationSummary, Memory
 from app.rag.embeddings import Embeddings
 from app.rag.indexing import cleanup_document, index_document, retrieve
-from app.rag.models import Chunk, Document
+from app.rag.models import Chunk, Document, KnowledgeBase
 from app.rag.parser import parse
 from app.tasks.execution import Execution
 from app.tasks.models import Run
@@ -176,6 +176,58 @@ def base(client):
     result = client.post(f"/api/v1/me/knowledge-bases", json={"name": "测试资料"}, headers=headers)
     assert result.status_code == 201
     return identity, headers, result.json()["id"]
+
+
+@pytest.mark.parametrize("queue_available", [True, False])
+def test_delete_base_revokes_documents_and_cleans_storage(client, storage, queue_available):
+    """整库删除立即撤销访问；队列故障也保留可恢复的清理意图。"""
+    _, headers, key = base(client)
+    doc = client.post(
+        f"/api/v1/knowledge-bases/{key}/documents?filename=delete.txt",
+        content=b"knowledge base deletion test", headers=headers,
+    ).json()
+    index_document(client.app.state.database, client.app.state.settings, doc["id"], 1)
+    assert storage[0] and storage[1]
+    dispatched = []
+
+    def dispatch(*args):
+        """记录清理调度，或模拟队列暂时不可用。"""
+        if not queue_available:
+            raise RuntimeError("queue unavailable")
+        dispatched.append(args)
+
+    client.app.state.dispatch_document = dispatch
+    assert client.delete(f"/api/v1/knowledge-bases/{key}", headers=headers).status_code == 204
+    assert client.get("/api/v1/me/knowledge-bases").json()["items"] == []
+    assert client.get(f"/api/v1/knowledge-bases/{key}/documents").status_code == 404
+    assert client.post(
+        f"/api/v1/knowledge-bases/{key}/search", json={"query": "test"}, headers=headers,
+    ).status_code == 404
+    assert client.post(
+        f"/api/v1/knowledge-bases/{key}/documents?filename=new.txt",
+        content=b"new document", headers=headers,
+    ).status_code == 404
+    assert client.get(f"/api/v1/documents/{doc['id']}/download").status_code == 404
+    with Session(client.app.state.database) as db:
+        assert db.get(KnowledgeBase, key).deleted
+        row = db.get(Document, doc["id"])
+        assert row.status == "deleting" and row.lease_token is None
+    assert dispatched == ([(doc["id"], 1, True)] if queue_available else [])
+    cleanup_document(client.app.state.database, client.app.state.settings, doc["id"])
+    assert not storage[0] and not storage[1]
+
+
+def test_delete_base_requires_owner_and_csrf(client):
+    """删除接口拒绝缺少防伪令牌及其他账号的请求。"""
+    _, headers, key = base(client)
+    path = f"/api/v1/knowledge-bases/{key}"
+    assert client.delete(path, headers=ORIGIN).status_code == 403
+    other = login(client, "member@example.test")
+    assert client.delete(
+        path, headers={**ORIGIN, "X-CSRF-Token": other["csrf_token"]},
+    ).status_code == 404
+    login(client)
+    assert len(client.get("/api/v1/me/knowledge-bases").json()["items"]) == 1
 
 
 @pytest.mark.parametrize(

@@ -17,7 +17,7 @@ from app.core.entities import identifier, now
 from app.core.logging import log_failure
 from app.identity.models import User
 from app.providers.client import ProviderFailure
-from app.rag.graph_models import GraphBuild, GraphEntity, GraphFact
+from app.rag.graph_models import GraphBuild, GraphEntity, GraphFact, GraphPart
 from app.rag.model import StructuredModel
 from app.rag.models import Chunk, Document
 from app.tasks.reliability import utc
@@ -54,10 +54,12 @@ def clear_graph(db: Session, document: str) -> None:
     """删除此文档的关系与实体，不影响其他文档提供的依据。"""
     db.execute(delete(GraphFact).where(GraphFact.document_id == document))
     db.execute(delete(GraphEntity).where(GraphEntity.document_id == document))
+    db.execute(delete(GraphPart).where(GraphPart.document_id == document))
 
 
 def queue_graph(db: Session, doc: Document) -> GraphBuild:
     """在文档锁保护下登记持久任务，旧执行令牌立即失效。"""
+    db.execute(delete(GraphPart).where(GraphPart.document_id == doc.id))
     build = db.get(GraphBuild, doc.id)
     if build is None:
         build = GraphBuild(document_id=doc.id, index_version=doc.index_version)
@@ -77,7 +79,7 @@ def valid_document(db: Session, doc: Document | None, generation: int) -> bool:
 
 
 def build_graph(engine: Engine, settings: Settings, key: str, generation: int) -> None:
-    """固定三分钟执行窗口，超时由调度器恢复；失败不改变文档可检索状态。"""
+    """每次抽取有限分块并保存进度，整份文档完成后原子发布图谱。"""
     if not settings.rag_graph_enabled:
         return
     token = identifier()
@@ -99,11 +101,13 @@ def build_graph(engine: Engine, settings: Settings, key: str, generation: int) -
             db.scalars(
                 select(Chunk)
                 .where(Chunk.document_id == key, Chunk.index_version == generation)
+                .where(~select(GraphPart.chunk_id).where(GraphPart.chunk_id == Chunk.id).exists())
                 .order_by(Chunk.ordinal)
-                .limit(65)
+                .limit(5)
             )
         )
-        parts = [(chunk.id, chunk.content) for chunk in chunks]
+        more = len(chunks) > 4
+        parts = [(chunk.id, chunk.content) for chunk in chunks[:4]]
         # 先复制本代原文并释放事务，模型抽取期间不持有文档锁；发布前再验证代数和令牌。
         db.commit()
 
@@ -122,9 +126,7 @@ def build_graph(engine: Engine, settings: Settings, key: str, generation: int) -
                 raise ProviderFailure("graph_build_cancelled")
 
     async def extract() -> list[tuple[str, str, Extraction]]:
-        """每块一次结构化抽取，总时长与块数有界，不发布截断的半成品。"""
-        if len(parts) > 64:
-            raise ProviderFailure("graph_document_limit")
+        """每批最多四块、三分钟；下一批由独立后台任务继续执行。"""
         result = []
         deadline = time.monotonic() + 180
         model = StructuredModel(settings, guard)
@@ -154,6 +156,28 @@ def build_graph(engine: Engine, settings: Settings, key: str, generation: int) -
                 or utc(build.lease_until) <= now()
             ):
                 return
+            for chunk_id, _content, extracted in extracted_parts:
+                db.add(GraphPart(
+                    chunk_id=chunk_id, document_id=key, data=extracted.model_dump(),
+                ))
+            db.flush()
+            if more:
+                # 成功批次不消耗故障重试次数，后续任务跳过已持久化的分块。
+                build.status, build.attempts = "queued", 0
+                build.token, build.lease_until, build.dispatched_at = None, None, None
+                db.commit()
+                try:
+                    dispatch_graph(key, generation)
+                except Exception:
+                    pass
+                return
+            completed = list(db.scalars(
+                select(GraphPart).join(Chunk, Chunk.id == GraphPart.chunk_id)
+                .where(GraphPart.document_id == key).order_by(Chunk.ordinal)
+            ))
+            extracted_parts = [
+                (part.chunk_id, "", Extraction.model_validate(part.data)) for part in completed
+            ]
             clear_graph(db, key)
             # 全部分块都抽取并校验成功后才替换图谱，避免读到部分新实体和部分旧关系。
             entities: dict[tuple[str, str], GraphEntity] = {}

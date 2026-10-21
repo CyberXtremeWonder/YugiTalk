@@ -58,12 +58,12 @@ export function ChatView({
     key: string;
     version: number;
   } | null>(null);
-  /** 合并可公开的流程事件，避免重复展示已接收步骤。 */
+  /** 同一任务的每个公开阶段只展示一次，完整多轮记录保留在服务端轨迹中。 */
   function recordStep(event: RunEvent) {
     const step = processStep(event);
     if (step)
       setSteps((previous) =>
-        previous.at(-1) === step ? previous : [...previous, step].slice(-32),
+        previous.includes(step) ? previous : [...previous, step],
       );
   }
   const scroll = useRef<HTMLDivElement>(null);

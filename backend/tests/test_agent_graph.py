@@ -4,6 +4,7 @@ from collections.abc import Callable, Iterator
 from typing import Any
 
 import pytest
+
 from app.agents.contracts import AgentConfig
 from app.agents.graph import run_graph
 from app.core.config import Settings
@@ -72,7 +73,6 @@ def test_invalid_tool_arguments_can_be_repaired() -> None:
     [
         ([call("unknown", text="你好")], {}, "tool_not_authorized"),
         ([call(text="你好")], {"tools": []}, "tool_not_authorized"),
-        ([call(text="你好")], {"max_tool_calls": 0}, "tool_call_limit"),
         ([call(text="你好")] * 3, {}, "no_progress"),
         ([call(text="你好")] * 2, {"max_steps": 1}, "model_step_limit"),
     ],

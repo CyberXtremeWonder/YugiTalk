@@ -20,7 +20,7 @@ from app.rag.graph import (
     sweep_graph,
     validate_extraction,
 )
-from app.rag.graph_models import GraphBuild, GraphEntity, GraphFact
+from app.rag.graph_models import GraphBuild, GraphEntity, GraphFact, GraphPart
 from app.rag.indexing import cleanup_document, index_document, retrieve
 from app.rag.models import Chunk, Document
 from app.rag.pipeline import RagPipeline
@@ -260,23 +260,120 @@ def test_graph_query_failure_keeps_dense_hits(client, storage, monkeypatch):
         assert fuse_graph(db, client.app.state.settings, {}, "DB1", hits) == (hits, -1)
 
 
-def test_oversized_graph_does_not_publish_partial_data(client, storage):
-    """超出首版抽取上限时明确失败，普通文档状态保持可用。"""
+def test_large_graph_processes_all_chunks_before_publishing(client, storage, monkeypatch):
+    """超过 64 块时分批持久化，最后一块也参与图谱，未完成不发布。"""
     _, headers, base_id = base(client)
     key = upload(client, headers, base_id, "支付服务使用DB1。")
     engine = client.app.state.database
     with Session(engine) as db:
         for number in range(64):
-            db.add(Chunk(document_id=key, index_version=1, ordinal=number + 2, content="额外文本"))
+            db.add(Chunk(
+                document_id=key, index_version=1, ordinal=number + 2,
+                content=f"服务{number}使用DB1。",
+            ))
         queue_graph(db, db.get(Document, key))
         db.commit()
-    build_graph(engine, client.app.state.settings, key, 1)
+    calls, sent = [], []
+
+    async def call(self, schema, purpose, payload, deadline):
+        """从每块原文返回不同的关系，验证没有遗漏或重复处理。"""
+        text = payload["text"]
+        calls.append(text)
+        return extraction(source=text.split("使用")[0], quote=text)
+
+    monkeypatch.setattr("app.rag.graph.StructuredModel.call", call)
+    monkeypatch.setattr("app.rag.graph.dispatch_graph", lambda *args: sent.append(args))
+    settings = client.app.state.settings.model_copy(update={"model_provider": "openai_compatible"})
+    for batch in range(17):
+        build_graph(engine, settings, key, 1)
+        with Session(engine) as db:
+            state = db.get(GraphBuild, key)
+            assert state.status == ("queued" if batch < 16 else "ready")
+            assert state.error_code is None
+            if batch < 16:
+                assert not list(db.scalars(select(GraphFact)))
+                assert len(list(db.scalars(select(GraphPart)))) == (batch + 1) * 4
+                assert state.attempts == 0
+        if batch == 0:
+            progress = client.get(f"/api/v1/documents/{key}/graph").json()
+            assert progress["completed_chunks"] == 4 and progress["total_chunks"] == 65
     with Session(engine) as db:
-        assert db.get(GraphBuild, key).error_code == "graph_document_limit"
+        facts = list(db.scalars(select(GraphFact)))
+        assert len(facts) == 65
+        assert any(fact.quote == "服务63使用DB1。" for fact in facts)
+        assert not list(db.scalars(select(GraphPart)))
         assert db.get(Document, key).status == "ready"
+    assert len(calls) == len(set(calls)) == 65
+    assert sent == [(key, 1)] * 16
 
 
-def test_migration_round_trip_preserves_documents(client, storage):
+@pytest.mark.parametrize("interruption", ["queue", "worker", "delete", "restart", "failure"])
+def test_graph_batches_survive_interruptions(client, storage, monkeypatch, interruption):
+    """批次间故障保留进度，删除清理临时数据，显式重建清空上一轮。"""
+    _, headers, base_id = base(client)
+    key = upload(client, headers, base_id, "支付服务使用DB1。")
+    engine, settings = client.app.state.database, client.app.state.settings
+    with Session(engine) as db:
+        for number in range(5):
+            db.add(Chunk(document_id=key, index_version=1, ordinal=number + 2, content="额外文本"))
+        db.commit()
+
+    def unavailable(*args):
+        """模拟下一批消息未能发送，等待调度器补投。"""
+        raise RuntimeError("queue unavailable")
+
+    monkeypatch.setattr("app.rag.graph.dispatch_graph", unavailable)
+    build_graph(engine, settings, key, 1)
+    with Session(engine) as db:
+        assert len(list(db.scalars(select(GraphPart)))) == 4
+        assert db.get(GraphBuild, key).status == "queued"
+    if interruption == "delete":
+        assert client.delete(f"/api/v1/documents/{key}", headers=headers).status_code == 202
+        cleanup_document(engine, settings, key)
+        with Session(engine) as db:
+            assert not list(db.scalars(select(GraphPart)))
+            assert db.get(Document, key).status == "deleted"
+        return
+    if interruption == "restart":
+        with Session(engine) as db:
+            db.get(GraphBuild, key).status = "failed"
+            db.commit()
+        assert client.post(f"/api/v1/documents/{key}/graph", headers=headers).status_code == 202
+        with Session(engine) as db:
+            assert not list(db.scalars(select(GraphPart)))
+        build_graph(engine, settings, key, 1)
+    if interruption == "worker":
+        with Session(engine) as db:
+            row = db.get(GraphBuild, key)
+            row.status, row.attempts = "building", 1
+            row.lease_until = now() - timedelta(seconds=1)
+            db.commit()
+    if interruption == "failure":
+        async def fail(*args):
+            """模拟后续批次返回无法核验的关系。"""
+            return extraction(quote="原文中没有的关系")
+
+        monkeypatch.setattr("app.rag.graph.StructuredModel.call", fail)
+        build_graph(
+            engine, settings.model_copy(update={"model_provider": "openai_compatible"}), key, 1,
+        )
+        with Session(engine) as db:
+            assert db.get(GraphBuild, key).status == "failed"
+            assert len(list(db.scalars(select(GraphPart)))) == 4
+            assert not list(db.scalars(select(GraphFact)))
+        return
+    sent = []
+    monkeypatch.setattr("app.rag.graph.dispatch_graph", lambda *args: sent.append(args))
+    sweep_graph(engine, settings)
+    assert sent == [(key, 1)]
+    build_graph(engine, settings, key, 1)
+    with Session(engine) as db:
+        assert db.get(GraphBuild, key).status == "ready"
+        assert not list(db.scalars(select(GraphPart)))
+
+
+@pytest.mark.parametrize("migration", ["0017_knowledge_graph", "0020_graph_batches"])
+def test_migration_round_trip_preserves_documents(client, storage, migration):
     """在隔离数据库实际执行升降级，验证外键和旧文档保留。"""
     import importlib.util
     from pathlib import Path
@@ -287,7 +384,7 @@ def test_migration_round_trip_preserves_documents(client, storage):
 
     _, headers, base_id = base(client)
     key = upload(client, headers, base_id, "支付服务使用DB1。")
-    path = Path(__file__).parents[1] / "migrations/versions/0017_knowledge_graph.py"
+    path = Path(__file__).parents[1] / f"migrations/versions/{migration}.py"
     spec = importlib.util.spec_from_file_location("graph_migration", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -295,9 +392,12 @@ def test_migration_round_trip_preserves_documents(client, storage):
     with engine.begin() as connection:
         with Operations.context(MigrationContext.configure(connection)):
             module.downgrade()
-            assert "graph_facts" not in inspect(connection).get_table_names()
+            table = "graph_facts" if migration == "0017_knowledge_graph" else "graph_parts"
+            assert table not in inspect(connection).get_table_names()
             module.upgrade()
-            assert len(inspect(connection).get_foreign_keys("graph_facts")) == 4
+            assert len(inspect(connection).get_foreign_keys(table)) == (
+                4 if migration == "0017_knowledge_graph" else 2
+            )
     with Session(engine) as db:
         assert db.get(Document, key).status == "ready"
         queue_graph(db, db.get(Document, key))

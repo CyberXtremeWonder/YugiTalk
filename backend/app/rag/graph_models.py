@@ -1,6 +1,7 @@
 """图谱构建状态与带原文依据的实体、关系；不替代文档授权。"""
 
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
@@ -21,6 +22,15 @@ class GraphBuild(Base):
     dispatched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     mode: Mapped[str] = mapped_column(String(16), default="model")
+
+
+class GraphPart(Base):
+    """暂存本轮已校验的分块抽取，全部完成前不参与图谱检索。"""
+
+    __tablename__ = "graph_parts"
+    chunk_id: Mapped[str] = mapped_column(ForeignKey("document_chunks.id"), primary_key=True)
+    document_id: Mapped[str] = mapped_column(ForeignKey("documents.id"), index=True)
+    data: Mapped[dict[str, Any]] = mapped_column(JSON)
 
 
 class GraphEntity(Base):

@@ -42,6 +42,7 @@ class AgentConfig(BaseModel):
     )
     closed_loop: bool = False
     max_steps: int = Field(default=6, ge=1, le=12)
+    # 兼容已发布版本；执行不再按工具调用次数限额。
     max_tool_calls: int = Field(default=10, ge=0, le=20)
     # 默认两次重试也需要保守预留，避免普通首轮调用就超过助手默认额度。
     token_budget: int = Field(default=30_000, ge=512, le=100_000)

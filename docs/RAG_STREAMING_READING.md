@@ -24,6 +24,15 @@
 
 ## 3. 跟踪覆盖状态怎样传到回答模型
 
+新任务在提交时复用 `local_plan` 判断短单意图问题，并冻结 `direct_mode`。
+简单问题由 `run_direct` 直接检索并流式回答，省去主助手委派和二次汇总；复杂任务、
+已选 Skill 和闭环任务仍走 `run_router`。旧任务没有该标记时保留原路径，恢复时不重新路由。
+两条路径均使用同一套工具权限、来源撤销校验与检查点；直接执行也不会重复执行已完成工具。
+
+执行助手首轮收到 `knowledge_catalog` 数据消息，仅含当前用户前 20 个库的 ID、名称及
+`next_offset`，可直接选择库检索；更多目录使用 `list_knowledge_bases` 分页。
+目录保持用户级数据优先级，不授予额外权限；恢复沿用已保存消息，不重复注入目录。
+
 阅读 `backend/app/agents/subagents.py`：
 
 1. `search` 返回 `coverage` 和真实 `sources`。
@@ -32,13 +41,32 @@
 
 显式选择知识库的路径在 `backend/app/tasks/execution.py` 中，把同样的信息放入内部 `rag_evidence` 上下文。
 
+外层检索不设置次数额度，跨库、改换关键词和同轮批量提案都可以继续执行。检索和工具调用统计次数与 Token 用量，Token 预算开关启用时按预算校验；不再通过 `stop_search` 撤去检索工具，旧检查点的该标记也不参与授权。
+
+同轮连续的 `knowledge_search` 提案经 `tool_batch_executor` 受控并行，沿用任务冻结的
+`rag_parallel_queries`（默认 4）控制同时执行的完整检索流程，不限制总检索次数。
+其他工具及委派保持原顺序。异步协程共享事件循环，数据库回调使用独立短事务串行执行；
+返回消息仍按原提案顺序配对，已完成结果逐项保存。任一致命错误会取消并等待其余协程退出，
+恢复时复用已经保存的结果，未完成流程沿各自 RAG 检查点继续。
+
+同任务、同知识库、相同查询（忽略首尾空白）复用检索与评分结果；同批相同查询也只实际执行一次。
+缓存保存在任务检查点的工具记录中，不跨任务或跨用户共享。命中前复核当前授权、来源版本，
+知识库可用文档集合或索引版本变化后失效；空结果同样受版本校验，不能遮蔽后来新增的资料。
+复用在 Trace 中标记 `reused`，不产生新的检索/评分模型请求，也不伪造 Token 消耗。
+结果提供 `new_evidence_count` 和已有查询信息，提示模型仅针对明确缺口补查；这是回答指导，
+不会因为证据条数或检索次数撤去工具权限。
+
 然后阅读 `backend/app/agents/answer_policy.py`：
 
 - `evidence_policy` 合并证据包，某个空库不能删除其他库的命中。
 - `answer_instruction` 分别约束充分支持、部分支持和无证据回答。
 - `validate_references` 校验回答中的证据 ID 是否属于实际证据包；来源由卡片展示，模型自行生成的 `[S1]` 编号会被拒绝。
 
-最后看 `backend/app/agents/graph.py` 的 `model`：每轮生成前重算约束，部分支持和无证据时使用不超过 1024 Token 的请求上限，同时尊重用户配置的更小上限。内部元数据会在调用模型前移除。规划和检查调用继续遵守自己的 JSON 契约。
+最后看 `backend/app/agents/graph.py` 的 `model`：每轮生成前重算约束，充分支持时不超过 2048 Token，部分支持、无证据或预算收尾时不超过 1024 Token，同时尊重用户配置的更小上限。内部元数据会在调用模型前移除。规划和检查调用继续遵守自己的 JSON 契约。
+
+工具调用不设置次数额度，历史 `max_tool_calls` 字段仅保留兼容。普通执行的最后一轮模型调用保留给回答，模型轮数和超时限制继续生效。真实权限撤销等错误仍立即终止。
+
+阅读 `backend/app/providers/client.py`：DeepSeek Flash 的有界回答使用与结构化 RAG 相同的非思考协议，把本次预算用于可见正文；普通调用保留原行为。模型轨迹记录 `max_output_tokens` 和 `bounded_answer`，方便区分 Agent 配置与实际请求上限。
 
 注意：引用校验在本轮正文生成结束后执行；已经流式显示的内容可能仍出现在失败任务的部分正文里，不能把这类失败回复视为已通过引用校验。
 
@@ -74,3 +102,7 @@
 阅读 `backend/tests/test_answer_boundaries.py`：部分证据保留、跨库空结果、伪造引用、生成预算、单字流合并、异常尾部、重复检测、慢流发布、过滤订阅、触顶错误和续传都有独立场景。
 
 阅读 `frontend/src/tasks/api.test.ts`：重点看过滤游标怎样在不进入页面回调的情况下参与断线续传。
+
+阅读 `backend/tests/test_tool_budget_finish.py`：检查跨额度批量提案、父子共享额度、检索次数限制、权限错误传播和 DeepSeek 请求预算。
+
+阅读 `frontend/src/chat/ChatView.tsx` 的 `recordStep` 和 `ProcessSummary.tsx`：同一任务的相同阶段只保留第一次出现，完整多轮记录仍保留在后端；`process-render.test.tsx` 验证非相邻重复阶段也只展示一次。

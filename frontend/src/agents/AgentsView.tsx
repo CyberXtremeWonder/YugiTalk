@@ -324,7 +324,6 @@ export function AgentsView({
             {(
               [
                 ["max_steps", "模型决策上限", 1, 12],
-                ["max_tool_calls", "工具调用上限", 0, 20],
                 ["max_output_tokens", "每次输出 Token 上限", 64, 100000],
                 ["timeout_seconds", "任务超时（秒）", 1, 300],
               ] as const

@@ -18,7 +18,7 @@ from app.identity.dependencies import DB, Actor, Principal, Writer
 from app.identity.models import User
 from app.rag.embeddings import Embeddings
 from app.rag.graph import queue_graph
-from app.rag.graph_models import GraphBuild, GraphEntity, GraphFact
+from app.rag.graph_models import GraphBuild, GraphEntity, GraphFact, GraphPart
 from app.rag.indexing import retrieve
 from app.rag.models import Chunk, Document, KnowledgeBase, ParentChunk
 from app.rag.retrieval import evidence_identity
@@ -42,7 +42,7 @@ class SearchInput(BaseModel):
 def owned_base(db: DB, key: str, actor: Principal, manage: bool = False) -> KnowledgeBase:
     """验证知识库归属及当前用户的空间成员资格。"""
     base = db.get(KnowledgeBase, key)
-    if base is None:
+    if base is None or base.deleted:
         raise HTTPException(404)
     member = membership(db, base.account_id, actor.user.id)
     if manage and member.role not in {"owner", "admin"}:
@@ -76,7 +76,9 @@ def bases(
 ) -> dict[str, Any]:
     """分页返回当前用户可访问空间内的知识库。"""
     membership(db, str(account_id), actor.user.id)
-    query = select(KnowledgeBase).where(KnowledgeBase.account_id == str(account_id))
+    query = select(KnowledgeBase).where(
+        KnowledgeBase.account_id == str(account_id), KnowledgeBase.deleted.is_(False)
+    )
     if cursor:
         query = query.where(KnowledgeBase.id > cursor)
     return page(
@@ -102,6 +104,31 @@ def create_base(account_id: AccountId, data: BaseInput, db: DB, actor: Writer) -
     audit(db, actor.user, "knowledge.create", row.account_id, row.id)
     db.commit()
     return {"id": row.id, "name": row.name}
+
+
+@router.delete("/knowledge-bases/{base_id}", status_code=204)
+def remove_base(base_id: UUID, request: Request, db: DB, actor: Writer) -> Response:
+    """撤销知识库及全部资料，保留墓碑供后台可靠清理存储与索引。"""
+    base = owned_base(db, str(base_id), actor, True)
+    db.refresh(base, with_for_update=True)
+    rows = list(db.scalars(
+        select(Document).where(
+            Document.knowledge_base_id == base.id, Document.status != "deleted"
+        ).with_for_update()
+    ))
+    base.deleted = True
+    for doc in rows:
+        doc.status, doc.error_code = "deleting", None
+        doc.lease_token, doc.lease_until, doc.last_dispatched_at = None, None, None
+    audit(db, actor.user, "knowledge.delete", base.account_id, base.id)
+    db.commit()
+    for doc in rows:
+        try:
+            request.app.state.dispatch_document(doc.id, doc.index_version, True)
+        except Exception:
+            # 删除意图已持久化，调度器会补投清理任务。
+            pass
+    return Response(status_code=204)
 
 
 @router.get("/knowledge-bases/{base_id}/documents")
@@ -150,6 +177,10 @@ async def upload(
         content.extend(block)
     if not content or not content.strip():
         raise HTTPException(422, detail={"code": "document_file_invalid"})
+    # 与整库删除串行提交，避免删除后仍写入新的资料。
+    db.refresh(base, with_for_update=True)
+    if base.deleted:
+        raise HTTPException(404)
     # 空间锁序与任务创建一致，去重和总资料数检查不会发生并发竞争。
     db.scalar(select(User).where(User.id == base.account_id).with_for_update())
     digest = hashlib.sha256(content).hexdigest()
@@ -309,6 +340,13 @@ def graph_status(document_id: UUID, db: DB, actor: Actor) -> dict[str, Any]:
         "index_version": build.index_version,
         "facts": [],
     }
+    if build.status in {"queued", "building"}:
+        result["total_chunks"] = db.scalar(select(func.count()).select_from(Chunk).where(
+            Chunk.document_id == doc.id, Chunk.index_version == doc.index_version,
+        ))
+        result["completed_chunks"] = db.scalar(
+            select(func.count()).select_from(GraphPart).where(GraphPart.document_id == doc.id)
+        )
     if build.status == "ready":
         entities = {
             item.id: item.name

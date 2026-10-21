@@ -36,6 +36,7 @@ def evidence_policy(messages: list[dict[str, Any]]) -> dict[str, Any] | None:
 def answer_instruction(policy: dict[str, Any]) -> str:
     """三个覆盖分支互斥，空来源不会继续携带要求引用资料的生成指令。"""
     common = "来源由应用卡片展示，不输出来源链接或 [S1] 等索引，不编造 evidence_id。"
+    common += "复用已有证据，证据足够时直接回答；仅对明确的事实缺口补查，不重复相同查询。"
     if policy["coverage"] == "none":
         return (
             "本次检索无有效证据。仅简短说明检索限制，不声称文件不存在，"

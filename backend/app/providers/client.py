@@ -218,6 +218,7 @@ class HTTPProvider:
         )
         self.guard: Callable[[], None] = lambda: None
         self.tool_schemas: dict[str, Any] = TOOL_SCHEMAS
+        self.bounded_answer = False
 
     def request_body(
         self, messages: list[dict[str, Any]], tools: list[str], max_tokens: int
@@ -232,6 +233,9 @@ class HTTPProvider:
                 "max_tokens": max_tokens,
                 "stream_options": {"include_usage": True},
             }
+            if self.model == "deepseek-flash" and self.bounded_answer:
+                # 与结构化 RAG 调用使用相同协议：有界回答将预算用于可见正文。
+                body["thinking"] = {"type": "disabled"}
             if tools:
                 body["tools"] = [
                     {"type": "function", "function": self.tool_schemas[name]} for name in tools
@@ -314,7 +318,8 @@ class HTTPProvider:
             published = False
             try:
                 with trace_step(
-                    "llm", self.model, provider=self.provider, retry=attempt
+                    "llm", self.model, provider=self.provider, retry=attempt,
+                    max_output_tokens=max_tokens, bounded_answer=self.bounded_answer,
                 ) as request_step, httpx.Client(
                     timeout=self.settings.model_timeout_seconds,
                     trust_env=False,

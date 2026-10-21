@@ -5,7 +5,7 @@ import json
 import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
-from test_agents import setup_task
+from test_agents import setup_task as create_task
 from test_enhanced_rag import uploaded
 from test_identity import login
 from test_reliability import expire_lease, recover
@@ -16,6 +16,11 @@ from app.tasks.ledger_models import ToolExecution
 from app.tasks.models import Run
 
 pytest_plugins = ["test_identity", "test_knowledge"]
+
+
+def setup_task(client, message="比较两个任务的结果", **config):
+    """委派路径测试使用明确多意图问题，简单路径另行覆盖。"""
+    return create_task(client, message, **config)
 
 
 def tool(name, **arguments):
@@ -30,7 +35,8 @@ class Script:
 
     def stream(self, messages, tools, max_tokens):
         self.guard()
-        assert set(tools) == self.allowed
+        # 预算收尾会撤去部分工具，任何轮次都不能暴露许可集合以外的工具。
+        assert set(tools) <= self.allowed
         action = next(self.actions)
         if callable(action):
             action = action(messages)

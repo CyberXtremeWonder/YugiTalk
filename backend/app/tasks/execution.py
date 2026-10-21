@@ -504,6 +504,7 @@ class Execution:
                         "skill",
                         "tool_catalog",
                         "router_mode",
+                        "direct_mode",
                     }
                 }
             )
@@ -534,9 +535,10 @@ class Execution:
                 text += delta
 
             if config_data.get("router_mode"):
-                from app.agents.subagents import run_router
+                from app.agents.subagents import run_direct, run_router
 
-                result = run_router(
+                runner = run_direct if config_data.get("direct_mode") else run_router
+                result = runner(
                     self, config, config_data, connection_settings, factory, provider,
                     messages, checkpoint, collect,
                 )

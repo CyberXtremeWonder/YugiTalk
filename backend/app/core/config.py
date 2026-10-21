@@ -104,6 +104,7 @@ class Settings(BaseSettings):
     recovery_interval_seconds: int = Field(default=5, ge=1, le=60)
     run_max_attempts: int = Field(default=5, ge=1, le=10)
     max_model_steps: int = Field(default=12, ge=1, le=100)
+    # 保留旧环境变量兼容，执行层不再按工具次数限额。
     max_tool_calls: int = Field(default=20, ge=1, le=200)
     # 默认不按 Token 额度拦截对话；用量统计、超时与并发边界继续生效。
     cumulative_budget_enabled: bool = False

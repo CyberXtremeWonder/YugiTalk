@@ -65,7 +65,9 @@ def test_partial_sources_reach_worker_router_and_saved_message(client, storage, 
     from test_subagents import Script, execute, tool
 
     _, _, base, _ = uploaded(client)
-    _, body, task, _ = setup_task(client, tools=[], token_budget=100000)
+    _, body, task, _ = setup_task(
+        client, message="比较 Milvus 的用途和局限", tools=[], token_budget=100000,
+    )
     monkeypatch.setattr("app.rag.pipeline.offline_grade", lambda *args: EvidenceGrade(
         relevance="strong", answerability="partial", ambiguity="none", route="rewrite",
     ))
