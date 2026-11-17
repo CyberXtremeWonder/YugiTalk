@@ -9,8 +9,10 @@ from app.accounts.access import AccountId, membership
 from app.audit.service import audit
 from app.identity.dependencies import DB, Actor, Writer
 from app.identity.models import User
-from app.tools.http_runtime import validate_arguments
-from app.tools.management_contracts import ToolInput, ToolToggle
+from app.tools.http.contracts import ToolInput, ToolToggle
+from app.tools.http.runtime import validate_arguments
+from app.tools.http.torrent import TOOL_NAME as TORRENT_TOOL
+from app.tools.http.torrent import configuration_note as torrent_configuration_note
 from app.tools.models import ManagedTool, ToolVersion
 from app.tools.registry import TOOL_SCHEMAS
 from app.tools.service import descriptor, digest, find_tool, latest, readiness, validate_config
@@ -53,6 +55,8 @@ def list_tools(account_id: AccountId, db: DB, actor: Actor, request: Request) ->
                 if item["kind"] == "http"
                 else ""
             )
+            if name == TORRENT_TOOL:
+                reason = torrent_configuration_note(request.app.state.settings)
             items.append(
                 {
                     **item,

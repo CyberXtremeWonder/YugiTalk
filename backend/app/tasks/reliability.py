@@ -22,6 +22,7 @@ from app.tools.registry import TOOL_SCHEMAS
 from app.tools.runner import execute_tool
 
 RETRYABLE = {
+    "context_limit",
     "model_transient",
     "model_timeout_or_network",
     "queue_unavailable",
@@ -39,6 +40,19 @@ RETRYABLE = {
 def utc(value: datetime) -> datetime:
     """将数据库时间规范到统一时区，兼容测试数据库的无时区结果。"""
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value
+
+
+def retryable_run(run: Run) -> bool:
+    """研究报告截断可从已保存阶段恢复；普通输出截断不自动扩大重试范围。"""
+    return run.status == "failed" and (
+        run.error_code in RETRYABLE
+        or (
+            run.error_code == "model_output_limit"
+            and bool(
+                run.checkpoint.get("research_tools") or run.snapshot.get("research_project_id")
+            )
+        )
+    )
 
 
 def fingerprint(tool: str, arguments: dict[str, Any]) -> str:
@@ -125,7 +139,13 @@ class LeaseKeeper(AbstractContextManager["LeaseKeeper"]):
 
 
 def prepare_bound_tool(
-    db: Session, run: Run, call: ToolCall, step: int, settings: Settings | None = None
+    db: Session,
+    run: Run,
+    call: ToolCall,
+    step: int,
+    settings: Settings | None = None,
+    *,
+    completing: bool = False,
 ) -> tuple[ToolExecution, dict[str, Any]]:
     """在租约事务中检查许可、版本和参数指纹，再创建或读取幂等执行账本。"""
     # 即便旧检查点或执行账本仍含下线工具，也不得执行或返回其历史写入结果。
@@ -139,6 +159,20 @@ def prepare_bound_tool(
     from app.tools.service import bound_tool
 
     pin = bound_tool(db, run.account_id, run.owner_id, run.snapshot, call.name, settings)
+    had_workspace = "file_workspace" in run.snapshot
+    if call.name == "read_files":
+        from app.tools.builtin.contracts import ReadFiles
+        from app.tools.builtin.files import authorize_read_path
+        from app.workspaces.execution import workspace_for_run
+        from app.workspaces.imports import imported_file
+        from app.workspaces.models import UserWorkspace
+
+        workspace = workspace_for_run(db, run, settings)
+        path = ReadFiles.model_validate(call.arguments).path
+        if isinstance(workspace, UserWorkspace):
+            imported_file(workspace, path)
+        else:
+            authorize_read_path(workspace, path)
     arguments = call.arguments
     digest = fingerprint(call.name, arguments)
     call_key = f"{step}:{call.id}"
@@ -148,6 +182,12 @@ def prepare_bound_tool(
             ToolExecution.run_id == run.id, ToolExecution.call_key == call_key
         )
     )
+    if (
+        call.name == "read_files" and item is not None
+        and item.status == "succeeded" and not had_workspace
+    ):
+        # 旧原型缓存没有用户目录绑定，不能把它解释为当前工作空间内的结果。
+        raise ProviderFailure("workspace_changed")
     if item is None:
         item = ToolExecution(
             run_id=run.id,
@@ -158,6 +198,9 @@ def prepare_bound_tool(
         )
         db.add(item)
         db.flush()
+    elif pin["kind"] == "mcp" and item.status != "succeeded" and not completing:
+        # 外部写操作可能已执行但结果未落库，恢复时不能再次投递。
+        raise ProviderFailure("mcp_execution_uncertain")
     if (
         item.tool != call.name
         or item.argument_hash != digest
@@ -177,7 +220,19 @@ def execute_bound_tool(
         return item.result
     if pin["kind"] != "builtin":
         raise ProviderFailure("tool_not_authorized")
-    result = execute_tool(call.name, call.arguments)
+    if call.name == "read_files":
+        from app.workspaces.execution import workspace_for_run
+        from app.workspaces.imports import read_imported_file
+        from app.workspaces.models import UserWorkspace
+
+        workspace = workspace_for_run(db, run, settings)
+        if isinstance(workspace, UserWorkspace):
+            assert settings is not None
+            result = read_imported_file(workspace, str(call.arguments["path"]), settings)
+        else:
+            result = execute_tool(call.name, call.arguments, workspace=workspace)
+    else:
+        result = execute_tool(call.name, call.arguments)
     item.status, item.result = "succeeded", result
     return result
 
@@ -197,7 +252,9 @@ def sweep(
         keys = list(
             db.scalars(
                 select(Run.id)
-                .where(Run.status.in_(["queued", "running", "waiting_approval", "waiting_input"]))
+                .where(Run.status.in_(
+                    ["queued", "running", "paused", "waiting_approval", "waiting_input"]
+                ))
                 .where(
                     or_(
                         and_(
@@ -205,9 +262,10 @@ def sweep(
                             or_(Run.last_dispatched_at.is_(None), Run.last_dispatched_at <= cutoff),
                         ),
                         and_(
-                            Run.status == "running",
-                            or_(Run.lease_until.is_(None), Run.lease_until <= due),
+                            Run.status.in_(["running", "paused"]),
+                            Run.lease_until <= due,
                         ),
+                        and_(Run.status == "running", Run.lease_until.is_(None)),
                         Run.status == "waiting_approval",
                         and_(
                             Run.status == "waiting_input",
@@ -230,6 +288,7 @@ def sweep(
             if not run or run.status not in {
                 "queued",
                 "running",
+                "paused",
                 "waiting_approval",
                 "waiting_input",
             }:
@@ -242,6 +301,10 @@ def sweep(
                 failure = "tool_removed"
             elif run.status == "waiting_input":
                 failure = "rag_clarification_expired"
+            elif run.status == "paused":
+                # 失联的暂停任务保留暂停状态，只有用户点击继续才从检查点排队。
+                if run.lease_until and utc(run.lease_until) <= now():
+                    stop_slice(run)
             elif run.status == "running":
                 # 租约到期才允许接管；保留已有检查点，重排队后从已提交的边界恢复。
                 if run.lease_until and utc(run.lease_until) > now():

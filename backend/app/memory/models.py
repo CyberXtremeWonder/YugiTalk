@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, Boolean, CheckConstraint, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.entities import Base, identifier, now
@@ -21,10 +21,12 @@ class Memory(Base):
     """保存用户在空间内主动确认的偏好记忆。"""
 
     __tablename__ = "memories"
+    __table_args__ = (CheckConstraint("importance BETWEEN 1 AND 5", name="ck_memory_importance"),)
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=identifier)
     account_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
     content: Mapped[str] = mapped_column(String(1000))
+    importance: Mapped[int] = mapped_column(Integer, default=3, server_default="3")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 

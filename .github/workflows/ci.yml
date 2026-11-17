@@ -16,12 +16,14 @@ jobs:
         with: {version: '0.12.12'}
       - run: uv sync --frozen
       - run: uv run --frozen ruff check .
-      - run: uv run --frozen ruff check ../scripts/init-production.py ../scripts/production-data.py ../scripts/deploy-production.py ../scripts/check-stage6-production.py ../scripts/check-stage6-restore.py ../scripts/check-stage6-latency.py ../scripts/stage6-model-fixture.py
+      - run: uv run --frozen ruff check ../scripts/init-production.py ../scripts/production-data.py ../scripts/deploy-production.py ../scripts/check-stage6-production.py ../scripts/check-stage6-restore.py ../scripts/check-stage6-latency.py ../scripts/stage6-model-fixture.py ../scripts/configure-alerts.py
       - run: uv run --frozen python ../scripts/check-code-comments.py
       - run: uv run --frozen python ../scripts/test-persistent-copy.py
       - run: uv run --frozen ruff format --check .
       - run: uv run --frozen mypy app start.py probes
       - run: uv run --frozen pytest -q --junitxml=stage1-tests.xml
+      - name: 告警规则离线回归
+        run: docker run --rm --network none --read-only --tmpfs /tmp --entrypoint /bin/promtool --mount type=bind,source=${{ github.workspace }}/deploy,target=/validation,readonly --workdir /validation prom/prometheus:v3.13.4@sha256:87861b8cf91579109319ebc300f3f1060e6da9c05d6ae8ad15a20c879e84e32e test rules alerts.test.yaml
       - run: uv run --frozen python start.py --check
       - run: uv run --frozen alembic upgrade head --sql
       # 只扫描锁定运行依赖；镜像基础层在生产验收独立扫描，不能用此项替代。

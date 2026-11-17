@@ -4,14 +4,15 @@ import json
 import logging
 import subprocess
 import sys
+import time
 from datetime import timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from uuid import NAMESPACE_URL, uuid5
 
 import httpx
 from celery.exceptions import SoftTimeLimitExceeded
-from sqlalchemy import Engine, delete, select
+from sqlalchemy import Engine, delete, func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -19,10 +20,13 @@ from app.core.config import Settings
 from app.core.entities import identifier, now
 from app.core.logging import log_failure
 from app.observability.telemetry import current_trace_id
-from app.rag.embeddings import Embeddings, VectorIndex
+from app.rag.chunking import requested_strategy
+from app.rag.docling import DOCLING_SUFFIXES
+from app.rag.embeddings import Embeddings, VectorIndex, VectorStoreError
 from app.rag.graph import clear_graph, fuse_graph, queue_graph
 from app.rag.graph_models import GraphBuild
 from app.rag.hierarchy import attach_parents
+from app.rag.limits import MAX_PARSER_OUTPUT_BYTES
 from app.rag.models import Chunk, Document, ParentChunk
 from app.rag.storage import ObjectStorage
 from app.tasks.reliability import LeaseKeeper, utc
@@ -36,10 +40,10 @@ def parse_file(content: bytes, suffix: str, strategy: str = "fixed") -> list[dic
         cwd=Path(__file__).resolve().parents[2],
         input=content,
         capture_output=True,
-        timeout=30,
+        timeout=650 if suffix in DOCLING_SUFFIXES else 150,
         check=False,
     )
-    if result.returncode or len(result.stdout) > 3 * 1024 * 1024:
+    if result.returncode or len(result.stdout) > MAX_PARSER_OUTPUT_BYTES:
         raise ValueError("document_parse_failed")
     data = json.loads(result.stdout)
     if "error" in data:
@@ -101,7 +105,8 @@ def _index_document(
             now() + timedelta(seconds=settings.run_lease_seconds),
         )
         doc.attempts += 1
-        doc.progress = {
+        is_jsonl = Path(doc.filename).suffix.lower() == ".jsonl"
+        doc.progress = doc.progress if is_jsonl and "jsonl_offset" in doc.progress else {
             "stage": "reading",
             "total_chunks": 0,
             "embedded_chunks": 0,
@@ -114,14 +119,15 @@ def _index_document(
             doc.knowledge_base_id,
             doc.collection_name,
         )
-        strategy = (
-            "markdown_sections"
-            if doc.chunk_strategy == "markdown-sections-700-parent-v1"
-            else "fixed"
-        )
+        strategy = requested_strategy(doc.chunk_strategy)
         db.commit()
     stage = "reading"
     try:
+        if is_jsonl:
+            from app.rag.jsonl_indexing import index_jsonl_slice
+
+            index_jsonl_slice(engine, settings, key, generation, token)
+            return
         content = ObjectStorage(settings).get(object_key)
         stage = "parsing"
         if not mark_progress(engine, key, generation, stage, token):
@@ -141,7 +147,9 @@ def _index_document(
                 return
             doc.status = "indexing"
             doc.chunk_strategy = (
-                "markdown-sections-700-parent-v1"
+                str(parts[0]["strategy_version"])
+                if "strategy_version" in parts[0]
+                else "markdown-sections-700-parent-v1"
                 if strategy == "markdown_sections"
                 else "leaf700-parent3-native-bm25-jieba-v2"
             )
@@ -219,6 +227,11 @@ def _index_document(
                     queue_graph(db, doc)
                 db.commit()
     except Exception as error:
+        if is_jsonl:
+            with Session(engine) as db:
+                current = db.get(Document, key)
+                if current:
+                    stage = str(current.progress.get("stage", stage))
         code = import_error(stage, error)
         log_failure(
             logging.getLogger(__name__),
@@ -246,14 +259,29 @@ def import_error(stage: str, error: Exception) -> str:
         "empty_or_oversized_file",
         "invalid_pdf",
         "pdf_encrypted_or_too_many_pages",
+        "pdf_password_required",
+        "pdf_too_many_pages",
         "pdf_page_too_large",
         "text_too_large",
-        "pdf_requires_ocr",
         "invalid_text",
+        "invalid_jsonl",
+        "jsonl_record_too_large",
+        "document_storage_read_failed",
         "unsupported_file_type",
+        "invalid_office",
+        "office_expanded_too_large",
+        "docling_unavailable",
+        "docling_configuration",
+        "docling_conversion_failed",
+        "docling_response_invalid",
+        "docling_response_too_large",
+        "document_parse_timeout",
         "empty_document",
         "too_many_chunks",
         "document_parse_failed",
+        "document_chunk_strategy_invalid",
+        "chunk_tokenizer_unavailable",
+        "chunk_tokenizer_model_mismatch",
         "embedding_input_invalid",
         "embedding_response_invalid",
         "embedding_dimension_mismatch",
@@ -291,6 +319,41 @@ def import_error(stage: str, error: Exception) -> str:
     }.get(stage, "document_index_failed")
 
 
+def cleanup_recovering_jsonl(db: Session, doc: Document, vectors: VectorIndex) -> bool:
+    """首代 JSONL 的确定性主键可绕过集合恢复故障；有界删除并持久保存进度。"""
+    if doc.index_version != 1 or Path(doc.filename).suffix.lower() != ".jsonl":
+        raise VectorStoreError(106)
+    # 父块先于向量提交，因此包括已发出但 SQL 子块未提交的当前记录批次。
+    upper = max(
+        db.scalar(select(func.coalesce(func.sum(ParentChunk.child_count), 0)).where(
+            ParentChunk.document_id == doc.id,
+        )) or 0,
+        db.scalar(select(func.coalesce(func.max(Chunk.ordinal), 0)).where(
+            Chunk.document_id == doc.id,
+        )) or 0,
+    )
+    offset = cast(int, doc.progress.get("cleanup_offset", 0))
+    deadline = time.monotonic() + 45
+    while offset < upper:
+        end = min(offset + 4096, upper)
+        identifiers = [str(uuid5(NAMESPACE_URL, f"{doc.id}:1:{i}"))
+                       for i in range(offset + 1, end + 1)]
+        vectors.request("entities/delete", {
+            "collectionName": doc.collection_name, "filter": "id in " + json.dumps(identifiers),
+        })
+        offset = end
+        doc.progress = {**doc.progress, "cleanup_offset": offset, "cleanup_primary_keys": True}
+        doc.error_code = None
+        db.commit()
+        # 重新加锁，与可能的重复清理或用户操作协调。
+        db.refresh(doc, with_for_update=True)
+        if doc.status != "deleting":
+            return False
+        if time.monotonic() >= deadline and offset < upper:
+            return False
+    return True
+
+
 def cleanup_document(engine: Engine, settings: Settings, key: str) -> None:
     """删除已撤销资料对应的对象和索引，保留状态隔离边界。"""
     with Session(engine) as db:
@@ -298,7 +361,18 @@ def cleanup_document(engine: Engine, settings: Settings, key: str) -> None:
         if doc is None or doc.status != "deleting":
             return
         try:
-            VectorIndex(settings).remove(doc.collection_name, doc.id)
+            vectors = VectorIndex(settings)
+            if doc.progress.get("cleanup_primary_keys"):
+                if not cleanup_recovering_jsonl(db, doc, vectors):
+                    return
+            else:
+                try:
+                    vectors.remove(doc.collection_name, doc.id)
+                except VectorStoreError as error:
+                    if error.code != 106:
+                        raise
+                    if not cleanup_recovering_jsonl(db, doc, vectors):
+                        return
             # 外部存储与 SQL 没有共享事务；删除失败保留 deleting 墓碑，供下次继续清理。
             ObjectStorage(settings).remove(doc.object_key)
             clear_graph(db, key)
@@ -308,6 +382,11 @@ def cleanup_document(engine: Engine, settings: Settings, key: str) -> None:
             doc.status, doc.error_code = "deleted", None
         except Exception as error:
             # 墓碑继续生效；用户可重试清理，不把删除失败文档重新开放检索。
+            # SQL 写入失败后先恢复会话，才可持久保存错误；外部删除仍可幂等重试。
+            db.rollback()
+            doc = db.scalar(select(Document).where(Document.id == key).with_for_update())
+            if doc is None or doc.status != "deleting":
+                return
             doc.error_code = "document_cleanup_failed"
             log_failure(
                 logging.getLogger(__name__),

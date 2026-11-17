@@ -18,6 +18,34 @@ const doc: Document = {
     batch_number: 2,
   },
 };
+
+test("完成后保留各阶段计时，旧记录不伪造耗时", () => {
+  const html = renderToStaticMarkup(<DocumentProgress doc={{ ...doc, status: "ready",
+    progress: { stage_seconds: { reading: 0.4, embedding: 120, sql: 4 } },
+  }} />);
+  expect(html).toContain("累计 120.00 秒");
+  expect(html).toContain("SQL 事务累计：4.00 秒");
+});
+
+test("流式 JSONL 按字节显示处理进度，并展示已处理记录与分块", () => {
+  const html = renderToStaticMarkup(
+    <DocumentIndexProgress
+      doc={{
+        ...doc,
+        progress: {
+          streaming: true,
+          source_bytes: 8000,
+          processed_bytes: 4000,
+          processed_records: 25,
+          indexed_chunks: 100,
+        },
+      }}
+    />,
+  );
+  expect(html).toContain('max="8000" value="4000"');
+  expect(html).toContain("已处理 25 条记录，已索引 100 块");
+  expect(html).not.toContain("100%");
+});
 test("文件列表进度按已写入数量显示，编码完成不等于索引完成", () => {
   const html = renderToStaticMarkup(
     <DocumentIndexProgress

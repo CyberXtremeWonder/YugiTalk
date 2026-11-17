@@ -27,7 +27,7 @@ class EntityInput(BaseModel):
     """只允许少量实体类型和明确出现在原文中的名称、别名。"""
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
-    name: str = Field(min_length=2, max_length=120)
+    name: str = Field(min_length=1, max_length=120)
     kind: Literal["person", "organization", "system", "product", "concept"]
     aliases: list[str] = Field(default_factory=list, max_length=5)
 
@@ -46,8 +46,8 @@ class Extraction(BaseModel):
     """限制单分块的输出规模，未知字段或越界关系不能发布。"""
 
     model_config = ConfigDict(extra="forbid")
-    entities: list[EntityInput] = Field(default_factory=list, max_length=12)
-    facts: list[FactInput] = Field(default_factory=list, max_length=12)
+    entities: list[EntityInput] = Field(default_factory=list, max_length=64)
+    facts: list[FactInput] = Field(default_factory=list, max_length=64)
 
 
 def clear_graph(db: Session, document: str) -> None:
@@ -138,7 +138,7 @@ def build_graph(engine: Engine, settings: Settings, key: str, generation: int) -
                     if settings.model_provider == "mock"
                     else await model.call(Extraction, "graph", {"text": content}, deadline)
                 )
-                validate_extraction(content, extracted)
+                extracted = verified_extraction(content, extracted)
                 result.append((chunk_id, content, extracted))
         return result
 
@@ -218,15 +218,24 @@ def build_graph(engine: Engine, settings: Settings, key: str, generation: int) -
             build.token, build.lease_until = None, None
             db.commit()
     except Exception as error:
-        log_failure(logging.getLogger(__name__), "knowledge.graph", error, document_id=key)
+        log_failure(
+            logging.getLogger(__name__), "knowledge.graph", error, document_id=key,
+            error_code=error.code if isinstance(error, ProviderFailure) else "graph_build_failed",
+        )
         with Session(engine) as db:
             db.scalar(select(Document).where(Document.id == key).with_for_update())
             build = db.get(GraphBuild, key)
             if build and build.token == token:
-                build.status = "failed"
                 build.error_code = (
                     error.code if isinstance(error, ProviderFailure) else "graph_build_failed"
                 )
+                retryable = build.error_code in {
+                    "model_transient", "model_timeout_or_network", "rag_deadline",
+                } and build.attempts < 3
+                build.status = "queued" if retryable else "failed"
+                if retryable:
+                    # 短暂网络故障稍后由调度器重投，保留已完成分块并限制重试次数。
+                    build.dispatched_at = now()
                 build.token, build.lease_until = None, None
                 db.commit()
 
@@ -235,7 +244,7 @@ def validate_extraction(content: str, data: Extraction) -> None:
     """拒绝虚构引用、未出现的名称、无效端点和缺少双方名称的证据。"""
     for entity in data.entities:
         if entity.name not in content or any(
-            len(alias) < 2 or len(alias) > 120 or alias not in content for alias in entity.aliases
+            len(alias) < 1 or len(alias) > 120 or alias not in content for alias in entity.aliases
         ):
             raise ProviderFailure("graph_evidence_invalid")
     for fact in data.facts:
@@ -250,6 +259,41 @@ def validate_extraction(content: str, data: Extraction) -> None:
             entity = data.entities[index]
             if not any(name in fact.quote for name in [entity.name, *entity.aliases]):
                 raise ProviderFailure("graph_evidence_invalid")
+
+
+def verified_extraction(content: str, data: Extraction) -> Extraction:
+    """逐项保留有原文依据的实体与关系，单条无效输出不阻断整份文档。"""
+    entities: list[EntityInput] = []
+    indices: dict[int, int] = {}
+    for index, entity in enumerate(data.entities):
+        if len(entities) == 12:
+            break
+        try:
+            validate_extraction(content, Extraction(entities=[entity]))
+        except ProviderFailure:
+            continue
+        indices[index] = len(entities)
+        entities.append(entity)
+    facts: list[FactInput] = []
+    for fact in data.facts:
+        if len(facts) == 12:
+            break
+        if fact.source not in indices or fact.target not in indices:
+            continue
+        mapped = fact.model_copy(update={
+            "source": indices[fact.source], "target": indices[fact.target],
+        })
+        try:
+            validate_extraction(content, Extraction(entities=entities, facts=[mapped]))
+        except ProviderFailure:
+            continue
+        facts.append(mapped)
+    if len(entities) != len(data.entities) or len(facts) != len(data.facts):
+        logging.getLogger(__name__).warning(
+            "graph_unverified_items_discarded entities=%s facts=%s",
+            len(data.entities) - len(entities), len(data.facts) - len(facts),
+        )
+    return Extraction(entities=entities, facts=facts)
 
 
 def dispatch_graph(key: str, generation: int) -> None:

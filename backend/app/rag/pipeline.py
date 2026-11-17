@@ -1,6 +1,7 @@
 """七步增强 RAG：有界规划、并行混合检索、重排、评判、一次纠错与可恢复合成。"""
 
 import asyncio
+import hashlib
 import re
 import time
 from collections.abc import Callable
@@ -80,12 +81,14 @@ class RagPipeline:
         update: Update,
         save: Save,
         model: StructuredModel | None = None,
+        *, answer_question: str | None = None,
     ) -> None:
         """注入授权范围、任务预算与保存接口，不在并行分支共享会话或事务。"""
         self.engine, self.settings = engine, settings
         self.workspace, self.user, self.base = workspace, user, base
         self.update, self.save = update, save
         self.model = model or StructuredModel(settings, update)
+        self.answer_question = answer_question
 
     def run(self, question: str, resume: dict[str, Any] | None = None) -> dict[str, Any]:
         """在同步 Worker 中进入异步编排，超时和异常保持公开安全错误码。"""
@@ -112,6 +115,19 @@ class RagPipeline:
             }
         )
         deadline = time.monotonic() + self.settings.rag_timeout_seconds
+        answer_question = self.answer_question or state["question"]
+        retrieval_id = hashlib.sha256(
+            f"{self.base}:{state['question']}".encode()
+        ).hexdigest()
+
+        def progress(phase: str, **details: object) -> None:
+            """公开查询身份，让并发流程可分组；不公开模型内部推理。"""
+            self.update("tool_status", {
+                "stage": "rag_" + phase,
+                "retrieval_id": retrieval_id,
+                "query": state["question"][:200],
+                **details,
+            }, 0)
         # 所有检索/模型分支共用一次执行的截止时间，不能每走一步就重置完整超时额度。
 
         def guard() -> None:
@@ -124,7 +140,7 @@ class RagPipeline:
                 phase = state["phase"]
                 if phase == "clarify":
                     return state
-                self.update("tool_status", {"stage": "rag_" + phase}, 0)
+                progress(phase, query_count=len(state.get("queries", [])))
                 with trace_step(
                     "retrieval" if phase == "retrieve" else "rag", "rag_" + phase
                 ) as phase_step:
@@ -142,6 +158,7 @@ class RagPipeline:
                         state["complexity"] = plan.complexity
                         state["trace"].append({"stage": "plan", "complexity": plan.complexity})
                         state["queries"] = plan.sub_questions or [state["question"][:2000]]
+                        progress("plan", query_count=len(state["queries"]))
                         state["phase"] = "retrieve"
                     elif phase == "retrieve":
                         with Session(self.engine) as db:
@@ -188,10 +205,11 @@ class RagPipeline:
                             state["question"], state["sources"], deadline, guard
                         )
                         state["trace"].append({"stage": "rerank", "status": status})
-                        self.update("tool_status", {"stage": "rag_rerank", "status": status}, 0)
+                        progress("rerank", status=status)
                         state["sources"] = pack_evidence(
                             # 重排后按优先级装入上下文预算，后面的评判与回答使用同一份证据包。
-                            state["sources"], self.settings.rag_context_characters
+                            state["sources"], self.settings.rag_context_characters,
+                            question=answer_question,
                         )
                         state["phase"] = "grade"
                     elif phase == "grade":
@@ -204,7 +222,7 @@ class RagPipeline:
                                 EvidenceGrade,
                                 "grade",
                                 {
-                                    "question": state["question"][:2000],
+                                    "question": answer_question[:2000],
                                     "evidence": [
                                         {
                                             "evidence_id": source["evidence_id"],
@@ -291,7 +309,8 @@ class RagPipeline:
                     elif phase == "synthesis":
                         # 合成只输出证据包给现有流式回答节点；无证据和澄清耗尽由程序说明限制。
                         state["sources"] = (
-                            pack_evidence(state["sources"], self.settings.rag_context_characters)
+                            pack_evidence(state["sources"], self.settings.rag_context_characters,
+                                          question=answer_question)
                             if state["route"] in {"answer", "partial_answer"}
                             else []
                         )

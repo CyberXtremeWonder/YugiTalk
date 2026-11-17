@@ -1,4 +1,4 @@
-# 这些规则产生 Prometheus 告警状态，外部通知渠道由运维配置。
+# 通知通过可选Alertmanager接入；生成和启用步骤见docs/ALERTING.md。
 groups:
   - name: yugitalk
     rules:
@@ -12,3 +12,14 @@ groups:
         for: 5m
         labels: {severity: warning}
         annotations: {summary: "API 五分钟错误率超过百分之五"}
+      - alert: YugiTalkQueueStalled
+        expr: max(yugitalk_queue_oldest_seconds) > 300
+        for: 2m
+        labels: {severity: warning}
+        annotations: {summary: "最老排队任务等待超过五分钟且持续两分钟"}
+      - alert: YugiTalkTaskFailures
+        # 当前保留任务的十五分钟窗口快照；不能对该Gauge使用rate或increase。
+        expr: max(yugitalk_recent_runs{status="failed"}) >= 5 and max(yugitalk_recent_runs{status="failed"}) / clamp_min(max(yugitalk_recent_runs{status="failed"}) + max(yugitalk_recent_runs{status="succeeded"}), 1) > 0.2
+        for: 5m
+        labels: {severity: warning}
+        annotations: {summary: "十五分钟窗口至少五个任务失败且失败率超过百分之二十"}

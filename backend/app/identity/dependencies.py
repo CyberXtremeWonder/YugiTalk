@@ -1,11 +1,12 @@
 """数据库会话、登录身份与写请求的来源及 CSRF 校验。"""
 
 import hmac
-from collections.abc import Iterator
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import UTC
 from typing import Annotated
 
+import anyio
 from fastapi import Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
@@ -17,10 +18,16 @@ from app.identity.security import digest
 COOKIE = "yugitalk_session"
 
 
-def database(request: Request) -> Iterator[Session]:
-    """为当前请求创建数据库会话，并在结束时释放资源。"""
-    with Session(request.app.state.database) as db:
-        yield db
+async def database(request: Request) -> AsyncIterator[Session]:
+    """先异步准入再鉴权，路由返回前关闭会话并归还工作许可。"""
+    admission = request.app.state.database_admission
+    async with admission.enter():
+        db = Session(request.app.state.database)
+        try:
+            yield db
+        finally:
+            with anyio.CancelScope(shield=True):
+                await anyio.to_thread.run_sync(db.close, limiter=admission.cleanup)
 
 
 def origin_guard(request: Request) -> None:
@@ -39,7 +46,7 @@ class Principal:
     token: str
 
 
-DB = Annotated[Session, Depends(database)]
+DB = Annotated[Session, Depends(database, scope="function")]
 
 
 def authenticated(request: Request, db: DB) -> Principal:

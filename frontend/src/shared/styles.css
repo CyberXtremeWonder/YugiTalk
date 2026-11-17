@@ -17,7 +17,7 @@
   --yellow: #ffca08;
   --blue: #4388ff;
   --icon: #141414;
-  --import-error: #ff986e;
+  --import-error: #ff7b7b;
   --import-done: #76d99f;
 }
 [data-theme="light"] {
@@ -29,7 +29,7 @@
   --muted: #626058;
   --line: #ccc7bb;
   --active: #e0dccf;
-  --import-error: #b83e1b;
+  --import-error: #b91c1c;
   --import-done: #25804b;
 }
 * {
@@ -1114,11 +1114,11 @@ button:disabled {
   width: 130px;
 }
 [role="alert"] {
-  color: #b73b13;
+  color: #b91c1c;
   font-size: 14px;
 }
 [data-theme="dark"] [role="alert"] {
-  color: #ff9f80;
+  color: #ff7b7b;
 }
 @media (max-width: 640px) {
   .login-shell {
@@ -1331,6 +1331,13 @@ button:disabled {
   display: block;
   margin-top: 8px;
   color: var(--muted);
+}
+.task-preview {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  margin-top: 8px;
 }
 .history button {
   display: block;
@@ -1760,6 +1767,74 @@ button:disabled {
 .skill-context {
   min-width: 0;
   flex: 1;
+}
+.composer-controls,
+.task-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.composer-controls {
+  flex-wrap: wrap;
+  max-width: 100%;
+}
+.composer .steering-target {
+  width: 140px;
+  max-width: 100%;
+}
+.pause-thinking,
+.task-controls button {
+  padding: 5px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.task-controls {
+  margin-bottom: 8px;
+}
+@media (max-width: 640px) {
+  .composer-bottom .skill-context {
+    flex: 1 1 100px;
+  }
+  .composer .composer-bottom .input-context {
+    flex: 2 1 140px;
+  }
+  .composer-controls {
+    margin-left: auto;
+  }
+}
+.task-thinking {
+  color: var(--muted);
+  font-size: 12px;
+}
+.task-clarification {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 8px 0;
+}
+.task-clarification button {
+  color: var(--muted);
+  font-size: 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 5px 10px;
+}
+.task-clarification button:hover {
+  color: var(--text);
+  background: var(--active);
+}
+.task-clarification span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
 }
 .skill-form > fieldset {
   display: grid;

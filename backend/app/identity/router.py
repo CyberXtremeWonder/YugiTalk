@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from app.audit.service import audit
 from app.core.config import Settings
 from app.core.entities import now
+from app.health.checks import DependencyDetails, DetailedHealthChecker
 from app.identity.contracts import AccountStateInput, EmailInput, LoginInput, RegisterInput
 from app.identity.dependencies import COOKIE, DB, Actor, Principal, Writer, origin_guard
 from app.identity.login_limit import LoginLimiter
@@ -136,7 +137,23 @@ async def development_status(request: Request, actor: Actor) -> dict[str, object
     if not actor.user.platform_admin or not actor.session.development_mode:
         raise HTTPException(403, detail={"code": "development_admin_required"})
     settings: Settings = request.app.state.settings
-    checks = await request.app.state.health_checker()
+    detailed_checker: DetailedHealthChecker | None = request.app.state.health_details_checker
+    details: DependencyDetails
+    if detailed_checker is not None:
+        details = await detailed_checker()
+        checks = {name: detail["ready"] for name, detail in details.items()}
+    else:
+        checks = await request.app.state.health_checker()
+        # 自定义探测器只返回布尔状态，不能将总耗时冒充各服务的探测耗时。
+        details = {
+            name: {
+                "ready": ready,
+                "latency_ms": None,
+                "checked_at": now().isoformat(),
+                "description": "由自定义探测器提供状态，未提供单项耗时",
+            }
+            for name, ready in checks.items()
+        }
     return {
         "environment": settings.app_env,
         "model_provider": settings.model_provider,
@@ -144,6 +161,8 @@ async def development_status(request: Request, actor: Actor) -> dict[str, object
         "embedding_model": settings.embedding_model,
         "registration_ready": settings.registration_enabled and mail_ready(settings),
         "checks": checks,
+        "check_details": details,
+        "checked_at": now().isoformat(),
     }
 
 

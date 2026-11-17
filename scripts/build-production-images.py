@@ -6,7 +6,7 @@ import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-COMPONENTS = ("backend", "frontend", "embedding")
+COMPONENTS = ("backend", "frontend", "embedding", "docling")
 
 
 def command(arguments: list[str]) -> subprocess.CompletedProcess[str]:
@@ -24,9 +24,9 @@ def command(arguments: list[str]) -> subprocess.CompletedProcess[str]:
 def build_component(component: str) -> None:
     """先保留实际旧ID到单个previous标签，再构建新标签；不操作运行容器。"""
     if component not in COMPONENTS:
-        raise ValueError("只允许本项目的三类镜像")
+        raise ValueError("只允许本项目的生产镜像")
     repository = "yugitalk-" + component
-    target = repository + ":0.2.0"
+    target = repository + (":0.1.0" if component == "docling" else ":0.2.0")
     inspected = command(["docker", "image", "inspect", target, "--format", "{{.Id}}"])
     if inspected.returncode == 0:
         identity = inspected.stdout.strip()
@@ -56,7 +56,7 @@ def build_component(component: str) -> None:
 
 
 def main() -> None:
-    """按选择构建，默认三类镜像；变更期间不得并行发布或重新构建同一标签。"""
+    """按选择构建，默认四类镜像；变更期间不得并行发布或重新构建同一标签。"""
     parser = argparse.ArgumentParser()
     parser.add_argument("--component", action="append", choices=COMPONENTS)
     args = parser.parse_args()

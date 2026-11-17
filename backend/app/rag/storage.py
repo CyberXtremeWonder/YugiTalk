@@ -1,12 +1,15 @@
 """S3 兼容原文存储，对象键由服务端生成，不接受用户文件路径。"""
 
-from typing import Any
+from collections.abc import Generator
+from typing import Any, BinaryIO
 
 import boto3
+from boto3.s3.transfer import TransferConfig
 from botocore.config import Config
 from botocore.exceptions import ClientError
 
 from app.core.config import Settings
+from app.rag.limits import MAX_JSONL_FILE_BYTES
 
 
 class ObjectStorage:
@@ -32,8 +35,8 @@ class ObjectStorage:
             ),
         )
 
-    def put(self, key: str, content: bytes) -> None:
-        """将原始资料写入配置的对象存储位置。"""
+    def ensure_bucket(self) -> None:
+        """开发环境按需建立资料桶，生产环境只使用预先配置的桶。"""
         try:
             self.client.head_bucket(Bucket=self.bucket)
         except ClientError as error:
@@ -53,9 +56,39 @@ class ObjectStorage:
                     "BucketAlreadyExists",
                 }:
                     raise
+    def put(self, key: str, content: bytes) -> None:
+        """将原始资料写入配置的对象存储位置。"""
+        self.ensure_bucket()
         self.client.put_object(
             Bucket=self.bucket, Key=key, Body=content, ContentType="application/octet-stream"
         )
+
+    def put_file(self, key: str, source: BinaryIO) -> None:
+        """从临时文件执行有界分段上传，不将大型资料整体装入内存。"""
+        self.ensure_bucket()
+        self.client.upload_fileobj(
+            source, self.bucket, key,
+            ExtraArgs={"ContentType": "application/octet-stream"},
+            Config=TransferConfig(
+                multipart_threshold=8 * 1024 * 1024,
+                multipart_chunksize=8 * 1024 * 1024,
+                use_threads=False,
+            ),
+        )
+
+    def chunks(self, key: str, offset: int = 0) -> Generator[bytes, None, None]:
+        """从字节检查点流式读取原文，迭代结束或取消时关闭 S3 响应。"""
+        options = {"Range": f"bytes={offset}-"} if offset else {}
+        body = self.client.get_object(Bucket=self.bucket, Key=key, **options)["Body"]
+        size = offset
+        try:
+            while block := body.read(1024 * 1024):
+                size += len(block)
+                if size > MAX_JSONL_FILE_BYTES:
+                    raise ValueError("file_too_large")
+                yield block
+        finally:
+            body.close()
 
     def get(self, key: str) -> bytes:
         """读取指定对象的内容，交由调用方执行权限与大小检查。"""

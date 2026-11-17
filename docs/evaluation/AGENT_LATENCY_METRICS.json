@@ -1,0 +1,273 @@
+{
+  "model": "deepseek-flash",
+  "results": [
+    {
+      "question": "你好",
+      "direct": false,
+      "status": "succeeded",
+      "error_code": null,
+      "seconds": 6.131,
+      "model_calls": 5,
+      "calls": [
+        {
+          "purpose": "agent",
+          "seconds": 1.573
+        },
+        {
+          "purpose": "plan",
+          "seconds": 1.257
+        },
+        {
+          "purpose": "execute",
+          "seconds": 1.082
+        },
+        {
+          "purpose": "reflect",
+          "seconds": 1.12
+        },
+        {
+          "purpose": "agent",
+          "seconds": 0.967
+        }
+      ],
+      "latency": {
+        "queue_ms": 10,
+        "first_text_ms": 6038,
+        "total_ms": 6139,
+        "elapsed_ms": 6139,
+        "model_work_ms": 5985,
+        "tool_work_ms": 3485,
+        "model_retries": 0,
+        "model_corrections": 0,
+        "reasoning_tokens": 105,
+        "unknown_reasoning_calls": 0
+      },
+      "requests": [
+        {
+          "duration_ms": 1578,
+          "provider": "openai_compatible",
+          "retry": 0,
+          "max_output_tokens": 1024,
+          "bounded_answer": false,
+          "purpose": "agent",
+          "reasoning_tokens": 69
+        },
+        {
+          "duration_ms": 1234,
+          "provider": "openai_compatible",
+          "retry": 0,
+          "max_output_tokens": 1024,
+          "bounded_answer": false,
+          "purpose": "plan",
+          "first_text_ms": 1078,
+          "reasoning_tokens": 0
+        },
+        {
+          "duration_ms": 1094,
+          "provider": "openai_compatible",
+          "retry": 0,
+          "max_output_tokens": 1024,
+          "bounded_answer": false,
+          "purpose": "execute",
+          "first_text_ms": 953,
+          "reasoning_tokens": 0
+        },
+        {
+          "duration_ms": 1125,
+          "provider": "openai_compatible",
+          "retry": 0,
+          "max_output_tokens": 1024,
+          "bounded_answer": false,
+          "purpose": "reflect",
+          "first_text_ms": 1031,
+          "reasoning_tokens": 36
+        },
+        {
+          "duration_ms": 954,
+          "provider": "openai_compatible",
+          "retry": 0,
+          "max_output_tokens": 1024,
+          "bounded_answer": false,
+          "purpose": "agent",
+          "first_text_ms": 860,
+          "reasoning_tokens": 0
+        }
+      ],
+      "answer": "你好！我是 YugiTalk 助手，很高兴见到你。有问题或需要整理资料，随时告诉我即可。"
+    },
+    {
+      "question": "你好",
+      "direct": true,
+      "status": "succeeded",
+      "error_code": null,
+      "seconds": 1.863,
+      "model_calls": 1,
+      "calls": [
+        {
+          "purpose": "agent",
+          "seconds": 1.767
+        }
+      ],
+      "latency": {
+        "queue_ms": 6,
+        "first_text_ms": 1809,
+        "total_ms": 1864,
+        "elapsed_ms": 1864,
+        "model_work_ms": 1765,
+        "tool_work_ms": 0,
+        "model_retries": 0,
+        "model_corrections": 0,
+        "reasoning_tokens": 0,
+        "unknown_reasoning_calls": 0
+      },
+      "requests": [
+        {
+          "duration_ms": 1765,
+          "provider": "openai_compatible",
+          "retry": 0,
+          "max_output_tokens": 1024,
+          "bounded_answer": false,
+          "purpose": "agent",
+          "first_text_ms": 1703,
+          "reasoning_tokens": 0
+        }
+      ],
+      "answer": "你好！有什么可以帮你的？"
+    },
+    {
+      "question": "什么是 RAG？",
+      "direct": false,
+      "status": "succeeded",
+      "error_code": null,
+      "seconds": 9.36,
+      "model_calls": 5,
+      "calls": [
+        {
+          "purpose": "agent",
+          "seconds": 1.418
+        },
+        {
+          "purpose": "plan",
+          "seconds": 2.086
+        },
+        {
+          "purpose": "execute",
+          "seconds": 1.477
+        },
+        {
+          "purpose": "reflect",
+          "seconds": 3.21
+        },
+        {
+          "purpose": "agent",
+          "seconds": 1.107
+        }
+      ],
+      "latency": {
+        "queue_ms": 4,
+        "first_text_ms": 9136,
+        "total_ms": 9357,
+        "elapsed_ms": 9357,
+        "model_work_ms": 9282,
+        "tool_work_ms": 6812,
+        "model_retries": 0,
+        "model_corrections": 0,
+        "reasoning_tokens": 708,
+        "unknown_reasoning_calls": 0
+      },
+      "requests": [
+        {
+          "duration_ms": 1422,
+          "provider": "openai_compatible",
+          "retry": 0,
+          "max_output_tokens": 1024,
+          "bounded_answer": false,
+          "purpose": "agent",
+          "reasoning_tokens": 75
+        },
+        {
+          "duration_ms": 2078,
+          "provider": "openai_compatible",
+          "retry": 0,
+          "max_output_tokens": 1024,
+          "bounded_answer": false,
+          "purpose": "plan",
+          "first_text_ms": 1843,
+          "reasoning_tokens": 160
+        },
+        {
+          "duration_ms": 1469,
+          "provider": "openai_compatible",
+          "retry": 0,
+          "max_output_tokens": 1024,
+          "bounded_answer": false,
+          "purpose": "execute",
+          "first_text_ms": 1360,
+          "reasoning_tokens": 91
+        },
+        {
+          "duration_ms": 3203,
+          "provider": "openai_compatible",
+          "retry": 0,
+          "max_output_tokens": 1024,
+          "bounded_answer": false,
+          "purpose": "reflect",
+          "first_text_ms": 3156,
+          "reasoning_tokens": 382
+        },
+        {
+          "duration_ms": 1110,
+          "provider": "openai_compatible",
+          "retry": 0,
+          "max_output_tokens": 1024,
+          "bounded_answer": false,
+          "purpose": "agent",
+          "first_text_ms": 891,
+          "reasoning_tokens": 0
+        }
+      ],
+      "answer": "RAG（检索增强生成）：先从外部知识库检索相关资料，再让大模型据此生成答案，从而提升准确性、减少幻觉。\n\n（本轮未检索知识库，也未调用你的 MCP 工具。）"
+    },
+    {
+      "question": "什么是 RAG？",
+      "direct": true,
+      "status": "succeeded",
+      "error_code": null,
+      "seconds": 1.287,
+      "model_calls": 1,
+      "calls": [
+        {
+          "purpose": "agent",
+          "seconds": 1.263
+        }
+      ],
+      "latency": {
+        "queue_ms": 1,
+        "first_text_ms": 1001,
+        "total_ms": 1285,
+        "elapsed_ms": 1285,
+        "model_work_ms": 1266,
+        "tool_work_ms": 0,
+        "model_retries": 0,
+        "model_corrections": 0,
+        "reasoning_tokens": 13,
+        "unknown_reasoning_calls": 0
+      },
+      "requests": [
+        {
+          "duration_ms": 1266,
+          "provider": "openai_compatible",
+          "retry": 0,
+          "max_output_tokens": 1024,
+          "bounded_answer": false,
+          "purpose": "agent",
+          "first_text_ms": 985,
+          "reasoning_tokens": 13
+        }
+      ],
+      "answer": "RAG（检索增强生成）是指：先检索外部知识，再让大模型结合检索结果生成回答，从而减少幻觉、提升时效与准确性。"
+    }
+  ],
+  "measured_at": "2026-11-02T07:00:24.314713+00:00",
+  "scope": "Synthetic questions in isolated SQLite; one sample per mode"
+}

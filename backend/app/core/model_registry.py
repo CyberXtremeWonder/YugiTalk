@@ -8,7 +8,10 @@ from app.memory import models as memory_models  # noqa: F401
 from app.observability import trace_models  # noqa: F401
 from app.rag import graph_models as graph_models  # noqa: F401
 from app.rag import models as rag_models  # noqa: F401
+from app.research import models as research_models  # noqa: F401
 from app.skills import models as skills_models  # noqa: F401
 from app.tasks import ledger_models  # noqa: F401
 from app.tasks import models as tasks_models  # noqa: F401
 from app.tools import models as tools_models  # noqa: F401
+from app.tools.mcp import models as mcp_models  # noqa: F401
+from app.workspaces import models as workspace_models  # noqa: F401

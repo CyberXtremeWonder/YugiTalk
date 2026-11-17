@@ -1,6 +1,6 @@
 # 功能模块目录说明
 
-更新日期：2026-10-11。已有实现按功能归档；自定义技能新增独立 `skills/` 模块与迁移。
+更新日期：2026 年 11 月 13 日。模块入口以当前目录为准；文档索引见 [README](README.md)，完整调用顺序见 [PROJECT_FLOW](PROJECT_FLOW.md)。
 
 ## 后端
 
@@ -8,14 +8,19 @@
 | --- | --- | --- |
 | `identity/` | 登录、会话、密码、来源与 CSRF 校验、用户初始化 | `router.py`、`dependencies.py`、`bootstrap.py` |
 | `accounts/` | 用户资源直接归属与会话范围 | `access.py` |
-| `agents/` | 助手配置、版本发布、执行图 | `router.py`、`contracts.py`、`graph.py` |
-| `skills/` | 空间自定义流程、版本、内容校验和工具收窄 | `router.py`、`service.py`、`models.py` |
+| `agents/` | 助手配置、版本发布、执行图 | `router.py`、`contracts.py`、`routing.py`、`graph.py`、`loop.py`、`subagents.py` |
+| `skills/` | 用户自定义流程、版本、内容校验和工具收窄 | `router.py`、`service.py`、`models.py` |
 | `guardrails/` | 固定安全策略、上下文降权、旧消息恢复和工具授权复核 | `prompts.py`、`tools.py` |
 | `chat/` | 私有对话、消息历史、对话所有权 | `router.py`、`access.py`、`models.py` |
 | `providers/` | Mock、OpenAI 兼容、Anthropic 模型协议及流式响应 | `client.py` |
-| `tools/` | 只读工具参数契约、固定注册表与执行 | `contracts.py`、`registry.py`、`runner.py` |
+| `tools/` | 工具目录、注册、授权与固定分发；实现按资源分类 | `registry.py`、`runner.py`、[入口说明](../backend/app/tools/README.md) |
+| `tools/builtin/` | 本地文本工具与工作空间文件读取 | `contracts.py`、`text.py`、`files.py` |
+| `tools/http/` | HTTPS 查询、天气路况、网页搜索及网络边界 | `contracts.py`、`runtime.py`、`defaults.py`、`search.py` |
+| `tools/mcp/` | MCP 服务器、凭证、协议与远程执行 | `models.py`、`client.py`、`service.py`、`router.py` |
+| `workspaces/` | 用户读取目录配置、目录选择及任务恢复授权 | `router.py`、`service.py`、`execution.py` |
 | `tasks/` | 任务、SSE、预算、取消、检查点、幂等、Worker 与 Scheduler | `router.py`、`execution.py`、`reliability.py`、`worker.py` |
 | `rag/` | 知识库、资料、解析分块、嵌入、向量检索与来源 | `router.py`、`indexing.py`、`parser.py`、`embeddings.py` |
+| `research/` | 研究项目、交付文件、内容复用和安全下载 | `router.py`、`runner.py`、`models.py` |
 | `memory/` | 用户确认的长期记忆、偏好开关与上下文摘要 | `router.py`、`context.py`、`models.py` |
 | `audit/` | 审计记录、事务内写入与管理员查询 | `router.py`、`service.py`、`models.py` |
 | `health/` | 存活、就绪、依赖探测 | `router.py`、`checks.py`、`milvus.py` |
@@ -23,13 +28,13 @@
 
 `main.py` 组装应用和路由；`backend/start.py` 保持统一启动入口。业务规则放在所属模块内，其他模块导入其契约或服务，避免从路由文件导入业务工具。没有为了填满目录而创建空业务模块。
 
-数据库实体分布在对应模块的 `models.py`，共用 `core/entities.py` 的 `Base`，由 `core/model_registry.py` 注册完整元数据。注册接入共享数据库初始化入口，确保独立启动的 Worker 和 Scheduler 也能解析完整外键。目录整理本身未修改表结构；后续 RAG 层级迁移为 `0008_rag_hierarchy`，自定义 Skill 迁移为 `0009_custom_skills`。
+数据库实体分布在对应模块的 `models.py`，共用 `core/entities.py` 的 `Base`，由 `core/model_registry.py` 注册完整元数据。注册接入共享数据库初始化入口，确保独立启动的 Worker 和 Scheduler 也能解析完整外键。当前迁移头是 `0027_memory_importance`；附件与记忆字段见数据库文档。本文目录整理不修改模型或迁移。
 
 任务执行账本及历史审批、工单映射在 `tasks/ledger_models.py`。历史数据保留，当前没有创建工单或审批业务接口。
 
 ## 前端
 
-`frontend/src/identity/`、`accounts/`、`agents/`、`skills/`、`chat/`、`tasks/`、`rag/`、`memory/`、`health/` 分别保存对应功能的组件、类型与 API 适配。`shared/` 保存导航定义和工作台样式；`App.tsx`、`main.tsx` 负责应用组装。
+`frontend/src/identity/`、`accounts/`、`agents/`、`skills/`、`chat/`、`tasks/`、`rag/`、`memory/`、`health/` 分别保存对应功能的组件、类型与 API 适配。`workspace/` 保留旧文件目录的兼容代码，当前附件入口在 chat/，设置界面已移除。`shared/` 保存导航定义和工作台样式；`App.tsx`、`main.tsx` 负责应用组装。
 
 对话消息类型在 `chat/api.ts`，任务类型和 SSE 消费在 `tasks/api.ts`，用户归属类型在 `accounts/api.ts`，助手类型在 `agents/api.ts`。认证请求工具在 `identity/api.ts`，统一同源 Cookie 和写入防伪校验。
 
@@ -83,4 +88,8 @@ pwsh -NoProfile -File scripts/test-stage5.ps1 -IncludeContainers -IncludeUI
 
 ## 工具目录与执行
 
-`backend/app/tools/` 集中保存工具管理的 `models.py`、`router.py`、`management_contracts.py`、`service.py`、`default_http.py` 与 `http_runtime.py`；`frontend/src/tools/` 提供管理页和共用授权选项。任务模块负责租约与账本，模型模块负责将冻结的 Schema 适配协议，Skill 不自行执行工具。[配置与安全流程](./TOOL_MANAGEMENT.md)
+`backend/app/tools/` 按资源分类：`builtin/` 放本地文本处理与 `read_files`，`http/` 放 HTTPS 参数、查询和网络边界，`mcp/` 放远程 MCP 协议与凭证。根目录保留共享目录的 `models.py`、`router.py`、`service.py`，以及 Schema 注册 `registry.py` 和内置分发 `runner.py`。`frontend/src/tools/` 提供管理页和共用授权选项。任务模块负责租约、账本和用户工作空间复核，模型模块负责将冻结的 Schema 适配协议，Skill 不自行执行工具。[工具代码入口](../backend/app/tools/README.md) · [配置与安全流程](./TOOL_MANAGEMENT.md)
+
+## 根目录与文档归档
+
+根目录保留日常 Compose 和配置入口；阶段六测试覆盖移到 deploy/tests/，需求移到 docs/REQUIREMENTS.md。docs/archive/ 保存旧视觉草图与复盘，阶段证据和评测数据保留原目录，分类见 [文档导航](README.md)。

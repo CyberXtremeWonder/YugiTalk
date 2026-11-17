@@ -20,7 +20,7 @@ await writeFile(
 import { GraphPanel } from '../../src/rag/GraphPanel';
 import '../../src/shared/styles.css';
 import '../../src/shared/hermes.css';
-createRoot(document.getElementById('root')!).render(<main><h1>知识图谱与原文依据</h1><GraphPanel documentId="graph-ui-test" csrf="test-csrf" /></main>);`,
+createRoot(document.getElementById('root')!).render(<main><h1>知识图谱与原文依据</h1><GraphPanel documentId="graph-ui-test" csrf="test-csrf" expanded /></main>);`,
 );
 
 const server = await createServer({
@@ -71,7 +71,6 @@ try {
     }
   });
   await page.goto("http://127.0.0.1:15173/.cache/graph-ui/index.html");
-  await page.getByText("知识图谱与原文依据", { exact: true }).last().click();
   await page.getByText("图谱：尚未构建").waitFor();
   await page.getByRole("button", { name: "构建图谱", exact: true }).click();
   await page.getByText("支付服务使用DB1。", { exact: true }).waitFor();

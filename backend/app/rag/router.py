@@ -2,24 +2,29 @@
 
 import hashlib
 from pathlib import PurePath
-from typing import Annotated, Any, Literal
+from tempfile import SpooledTemporaryFile
+from typing import Annotated, Any, BinaryIO, cast
 from urllib.parse import quote
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
-from starlette.responses import Response
+from starlette.concurrency import run_in_threadpool
+from starlette.responses import Response, StreamingResponse
 
 from app.accounts.access import AccountId, membership
 from app.audit.service import audit
 from app.core.pagination import page
 from app.identity.dependencies import DB, Actor, Principal, Writer
 from app.identity.models import User
+from app.rag.chunking import ChunkStrategy, requested_strategy, strategy_version
+from app.rag.docling import DOCLING_SUFFIXES
 from app.rag.embeddings import Embeddings
 from app.rag.graph import queue_graph
 from app.rag.graph_models import GraphBuild, GraphEntity, GraphFact, GraphPart
 from app.rag.indexing import retrieve
+from app.rag.limits import MAX_FILE_BYTES, MAX_JSONL_FILE_BYTES
 from app.rag.models import Chunk, Document, KnowledgeBase, ParentChunk
 from app.rag.retrieval import evidence_identity
 from app.rag.storage import ObjectStorage
@@ -63,6 +68,7 @@ def document_data(doc: Document) -> dict[str, object]:
         "embedding_version": doc.embedding_version,
         "content_hash": doc.content_hash,
         "chunk_strategy": doc.chunk_strategy,
+        "created_at": doc.created_at.isoformat(),
     }
 
 
@@ -111,11 +117,13 @@ def remove_base(base_id: UUID, request: Request, db: DB, actor: Writer) -> Respo
     """撤销知识库及全部资料，保留墓碑供后台可靠清理存储与索引。"""
     base = owned_base(db, str(base_id), actor, True)
     db.refresh(base, with_for_update=True)
-    rows = list(db.scalars(
-        select(Document).where(
-            Document.knowledge_base_id == base.id, Document.status != "deleted"
-        ).with_for_update()
-    ))
+    rows = list(
+        db.scalars(
+            select(Document)
+            .where(Document.knowledge_base_id == base.id, Document.status != "deleted")
+            .with_for_update()
+        )
+    )
     base.deleted = True
     for doc in rows:
         doc.status, doc.error_code = "deleting", None
@@ -157,7 +165,7 @@ async def upload(
     db: DB,
     actor: Writer,
     filename: Annotated[str, Query(min_length=1, max_length=160)],
-    chunk_strategy: Annotated[Literal["fixed", "markdown_sections"], Query()] = "fixed",
+    chunk_strategy: Annotated[ChunkStrategy, Query()] = "auto",
 ) -> dict[str, Any]:
     """验证文件格式、大小与去重边界，保存资料并投递索引任务。"""
     base = owned_base(db, str(base_id), actor, True)
@@ -166,92 +174,96 @@ async def upload(
     if (
         PurePath(filename).name != filename
         or any(character in filename for character in "/\\\x00\r\n")
-        or PurePath(filename).suffix.lower() not in {".txt", ".md", ".pdf"}
+        or PurePath(filename).suffix.lower() not in DOCLING_SUFFIXES | {".txt", ".md", ".jsonl"}
     ):
         raise HTTPException(422, detail={"code": "document_file_invalid"})
-    content = bytearray()
-    # 边收边检查大小，不能先完整读取再拒绝，否则超大上传仍会耗尽进程内存。
-    async for block in request.stream():
-        if len(content) + len(block) > 20 * 1024 * 1024:
-            raise HTTPException(413)
-        content.extend(block)
-    if not content or not content.strip():
-        raise HTTPException(422, detail={"code": "document_file_invalid"})
-    # 与整库删除串行提交，避免删除后仍写入新的资料。
-    db.refresh(base, with_for_update=True)
-    if base.deleted:
-        raise HTTPException(404)
-    # 空间锁序与任务创建一致，去重和总资料数检查不会发生并发竞争。
-    db.scalar(select(User).where(User.id == base.account_id).with_for_update())
-    digest = hashlib.sha256(content).hexdigest()
-    existing = db.scalar(
-        select(Document).where(
-            Document.knowledge_base_id == base.id, Document.content_hash == digest
+    is_jsonl = PurePath(filename).suffix.lower() == ".jsonl"
+    maximum = MAX_JSONL_FILE_BYTES if is_jsonl else MAX_FILE_BYTES
+    hasher = hashlib.sha256()
+    size, has_content = 0, False
+    # 上传先落盘；只保留 1 MB 内存，异常或客户端断开时由上下文自动清理。
+    db.rollback()
+    with SpooledTemporaryFile(max_size=1024 * 1024, mode="w+b") as content:
+        async for block in request.stream():
+            size += len(block)
+            if size > maximum:
+                raise HTTPException(413)
+            hasher.update(block)
+            has_content = has_content or bool(block.strip())
+            await run_in_threadpool(content.write, block)
+        if not size or not has_content:
+            raise HTTPException(422, detail={"code": "document_file_invalid"})
+        # 与整库删除串行提交，避免删除后仍写入新的资料。
+        db.refresh(base, with_for_update=True)
+        if base.deleted:
+            raise HTTPException(404)
+        # 空间锁序与任务创建一致，去重和总资料数检查不会发生并发竞争。
+        db.scalar(select(User).where(User.id == base.account_id).with_for_update())
+        digest = hasher.hexdigest()
+        existing = db.scalar(
+            select(Document).where(
+                Document.knowledge_base_id == base.id, Document.content_hash == digest
+            )
         )
-    )
-    if existing and existing.status == "deleted":
-        db.delete(existing)
-        db.flush()
-        existing = None
-    if existing:
-        # 内容相同可复用已有导入；切块策略不同则冲突，不能把两种索引语义混为一份。
-        existing_strategy = (
-            "markdown_sections"
-            if existing.chunk_strategy == "markdown-sections-700-parent-v1"
-            else "fixed"
+        if existing and existing.status == "deleted":
+            db.delete(existing)
+            db.flush()
+            existing = None
+        if existing:
+            # 内容相同可复用已有导入；切块策略不同则冲突，不能把两种索引语义混为一份。
+            existing_strategy = requested_strategy(existing.chunk_strategy)
+            if existing_strategy != chunk_strategy:
+                raise HTTPException(409, detail={"code": "document_chunk_strategy_conflict"})
+            return {**document_data(existing), "duplicate": True}
+        count = (
+            db.scalar(
+                select(func.count())
+                .select_from(Document)
+                .where(Document.knowledge_base_id == base.id, Document.status != "deleted")
+            )
+            or 0
         )
-        if existing_strategy != chunk_strategy:
-            raise HTTPException(409, detail={"code": "document_chunk_strategy_conflict"})
-        return {**document_data(existing), "duplicate": True}
-    count = (
-        db.scalar(
-            select(func.count())
-            .select_from(Document)
-            .where(Document.knowledge_base_id == base.id, Document.status != "deleted")
+        if count >= 200:
+            raise HTTPException(409, detail={"code": "knowledge_document_limit"})
+        key = str(uuid4())
+        embedding = Embeddings(request.app.state.settings)
+        doc = Document(
+            id=key,
+            account_id=base.account_id,
+            knowledge_base_id=base.id,
+            filename=filename,
+            content_hash=digest,
+            object_key=f"knowledge/{base.account_id}/{key}",
+            size=size,
+            embedding_version=embedding.version,
+            collection_name=embedding.collection,
+            chunk_strategy=strategy_version(chunk_strategy),
         )
-        or 0
-    )
-    if count >= 200:
-        raise HTTPException(409, detail={"code": "knowledge_document_limit"})
-    key = str(uuid4())
-    embedding = Embeddings(request.app.state.settings)
-    doc = Document(
-        id=key,
-        account_id=base.account_id,
-        knowledge_base_id=base.id,
-        filename=filename,
-        content_hash=digest,
-        object_key=f"knowledge/{base.account_id}/{key}",
-        size=len(content),
-        embedding_version=embedding.version,
-        collection_name=embedding.collection,
-        chunk_strategy=(
-            "markdown-sections-700-parent-v1"
-            if chunk_strategy == "markdown_sections"
-            else "paragraph-700-overlap100-v1"
-        ),
-    )
-    storage = ObjectStorage(request.app.state.settings)
-    # 对象存储无法参加 SQL 事务，先存原文再提交元数据；SQL 失败时尽力删除孤立对象。
-    try:
-        storage.put(doc.object_key, bytes(content))
-        db.add(doc)
-        db.flush()
-        audit(db, actor.user, "document.upload", base.account_id, key)
-        db.commit()
-    except Exception:
-        db.rollback()
+        storage = ObjectStorage(request.app.state.settings)
+        # 对象存储无法参加 SQL 事务，先存原文再提交元数据；SQL 失败时尽力删除孤立对象。
         try:
-            storage.remove(doc.object_key)
+            content.seek(0)
+            if is_jsonl:
+                await run_in_threadpool(storage.put_file, doc.object_key, cast(BinaryIO, content))
+            else:
+                await run_in_threadpool(storage.put, doc.object_key, content.read())
+            db.add(doc)
+            db.flush()
+            audit(db, actor.user, "document.upload", base.account_id, key)
+            db.commit()
         except Exception:
+            db.rollback()
+            try:
+                storage.remove(doc.object_key)
+            except Exception:
+                pass
+            raise HTTPException(503) from None
+        try:
+            request.app.state.dispatch_document(key, doc.index_version)
+        except Exception:
+            # 排队状态已持久化，调度器补投；不把暂时的 Redis 错误变成丢失任务。
             pass
-        raise HTTPException(503) from None
-    try:
-        request.app.state.dispatch_document(key, doc.index_version)
-    except Exception:
-        # 排队状态已持久化，调度器补投；不把暂时的 Redis 错误变成丢失任务。
-        pass
-    return document_data(doc)
+        return document_data(doc)
 
 
 @router.post("/knowledge-bases/{base_id}/search")
@@ -268,7 +280,13 @@ def search(
 
 
 @router.post("/documents/{document_id}/retry")
-def retry(document_id: UUID, request: Request, db: DB, actor: Writer) -> dict[str, Any]:
+def retry(
+    document_id: UUID,
+    request: Request,
+    db: DB,
+    actor: Writer,
+    chunk_strategy: Annotated[ChunkStrategy | None, Query()] = None,
+) -> dict[str, Any]:
     """验证权限与当前状态后重新提交处理意图，保留幂等和版本边界。"""
     doc = db.scalar(select(Document).where(Document.id == str(document_id)).with_for_update())
     if doc is None:
@@ -277,6 +295,8 @@ def retry(document_id: UUID, request: Request, db: DB, actor: Writer) -> dict[st
     cleanup = doc.status == "deleting"
     if not cleanup and doc.status not in {"failed", "ready"}:
         raise HTTPException(409)
+    if chunk_strategy == "markdown_sections" and PurePath(doc.filename).suffix.lower() != ".md":
+        raise HTTPException(422, detail={"code": "document_chunk_strategy_invalid"})
     if not cleanup:
         embedding = Embeddings(request.app.state.settings)
         if doc.collection_name != embedding.collection:
@@ -285,6 +305,8 @@ def retry(document_id: UUID, request: Request, db: DB, actor: Writer) -> dict[st
 
             VectorIndex(request.app.state.settings).remove(doc.collection_name, doc.id)
         doc.index_version += 1
+        if chunk_strategy is not None:
+            doc.chunk_strategy = strategy_version(chunk_strategy)
         doc.embedding_version, doc.collection_name = embedding.version, embedding.collection
         doc.status = "queued"
         # 新索引版本从零计数，旧任务不得覆盖新版本的进度。
@@ -341,9 +363,14 @@ def graph_status(document_id: UUID, db: DB, actor: Actor) -> dict[str, Any]:
         "facts": [],
     }
     if build.status in {"queued", "building"}:
-        result["total_chunks"] = db.scalar(select(func.count()).select_from(Chunk).where(
-            Chunk.document_id == doc.id, Chunk.index_version == doc.index_version,
-        ))
+        result["total_chunks"] = db.scalar(
+            select(func.count())
+            .select_from(Chunk)
+            .where(
+                Chunk.document_id == doc.id,
+                Chunk.index_version == doc.index_version,
+            )
+        )
         result["completed_chunks"] = db.scalar(
             select(func.count()).select_from(GraphPart).where(GraphPart.document_id == doc.id)
         )
@@ -467,8 +494,8 @@ def download(document_id: UUID, request: Request, db: DB, actor: Actor) -> Respo
     if doc is None or doc.status in {"deleting", "deleted"}:
         raise HTTPException(404)
     owned_base(db, doc.knowledge_base_id, actor)
-    content = ObjectStorage(request.app.state.settings).get(doc.object_key)
-    return Response(
+    content = ObjectStorage(request.app.state.settings).chunks(doc.object_key)
+    return StreamingResponse(
         content,
         media_type="application/octet-stream",
         headers={

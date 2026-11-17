@@ -6,6 +6,7 @@ import json
 import math
 import time
 from collections.abc import Callable
+from contextlib import nullcontext
 from typing import Any
 
 import httpx
@@ -13,12 +14,21 @@ import httpx
 from app.core.config import Settings
 
 
+class VectorStoreError(RuntimeError):
+    """保留向量库业务错误码供恢复决策使用，不传播外部错误正文。"""
+
+    def __init__(self, code: int | None) -> None:
+        super().__init__("vector_store_unavailable")
+        self.code = code
+
+
 class Embeddings:
     """统一本地与服务器嵌入协议，校验向量并生成索引配置标识。"""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, *, client: httpx.Client | None = None) -> None:
         """保存实例所需的依赖与配置，初始化后续执行使用的状态。"""
         self.settings = settings
+        self.client = client
         profile = (
             # 模型、修订版和维度决定向量语义；集合还包含结构版本，避免不兼容索引混用。
             f"{settings.embedding_provider}:{settings.embedding_model}:"
@@ -32,8 +42,8 @@ class Embeddings:
         self.collection = settings.vector_collection_prefix + "_" + schema_version
 
     def encode(self, texts: list[str]) -> list[list[float]]:
-        """一次至多十六个块；维度、数值和返回顺序均在服务端校验。"""
-        if not texts or len(texts) > 16 or any(not text or len(text) > 2000 for text in texts):
+        """一次至多六十四个块；维度、数值和返回顺序均在服务端校验。"""
+        if not texts or len(texts) > 64 or any(not text or len(text) > 2000 for text in texts):
             raise ValueError("embedding_input_invalid")
         if self.settings.embedding_provider == "mock":
             # 仅供隔离测试的字符散列向量，不作为真实语义模型或评测结论。
@@ -49,9 +59,9 @@ class Embeddings:
                 norm = math.sqrt(sum(value * value for value in vector)) or 1
                 vectors.append([value / norm for value in vector])
             return vectors
-        with httpx.Client(
+        with (nullcontext(self.client) if self.client is not None else httpx.Client(
             timeout=self.settings.embedding_timeout_seconds, trust_env=False
-        ) as client:
+        )) as client:
             response = client.post(
                 self.settings.embedding_base_url.rstrip("/") + "/embeddings",
                 headers={
@@ -153,14 +163,16 @@ async def bounded_post(
 class VectorIndex:
     """封装向量索引建表、写入、检索与资料删除操作。"""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, *, client: httpx.Client | None = None) -> None:
         """保存实例所需的依赖与配置，初始化后续执行使用的状态。"""
         self.settings = settings
+        self.client = client
 
     def request(self, operation: str, payload: dict[str, Any]) -> dict[str, Any]:
         """发送已认证的受控服务请求，并检查业务响应码。"""
         token = self.settings.milvus_token.get_secret_value()
-        with httpx.Client(timeout=30, trust_env=False) as client:
+        with (nullcontext(self.client) if self.client is not None else
+              httpx.Client(timeout=30, trust_env=False)) as client:
             response = client.post(
                 self.settings.milvus_uri.rstrip("/") + "/v2/vectordb/" + operation,
                 headers={"Authorization": "Bearer " + token} if token else {},
@@ -169,7 +181,7 @@ class VectorIndex:
             response.raise_for_status()
             data: dict[str, Any] = response.json()
         if not isinstance(data, dict) or type(data.get("code")) is not int or data["code"] != 0:
-            raise RuntimeError("vector_store_unavailable")
+            raise VectorStoreError(data.get("code") if isinstance(data, dict) else None)
         return data
 
     def ensure(self, embeddings: Embeddings) -> None:

@@ -1,5 +1,6 @@
 """统一步骤记录入口，通过上下文传递任务和父步骤，不依赖采样。"""
 
+import json
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -12,6 +13,7 @@ from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session
 
 from app.core.entities import identifier, now
+from app.observability.telemetry import operation_span
 from app.observability.trace_models import TraceStep
 
 _recorder: ContextVar[tuple[Engine, str, int] | None] = ContextVar("trace_recorder", default=None)
@@ -54,6 +56,60 @@ def recording(engine: Engine, run_id: str, attempt: int) -> Iterator[None]:
 
 @contextmanager
 def trace_step(
+    kind: str, name: str, iteration: int | None = None, **details: object
+) -> Iterator[Step]:
+    """真实模型请求逐次映射为 Generation，外层循环不重复记录用量。"""
+    if kind != "llm" or details.get("provider") == "mock":
+        with _record_step(kind, name, iteration, **details) as step:
+            yield step
+        return
+    with operation_span("model.request") as span:
+        if span is not None:
+            span.set_attribute("langfuse.observation.type", "generation")
+            span.set_attribute("langfuse.observation.model.name", name)
+            for key in ("provider", "retry", "purpose", "correction"):
+                value = details.get(key)
+                if isinstance(value, (str, int, bool)):
+                    span.set_attribute("langfuse.observation.metadata." + key, value)
+        step = Step()
+        outcome = "completed"
+        try:
+            with _record_step(kind, name, iteration, **details) as step:
+                yield step
+        except BaseException as error:
+            outcome = "failed" if isinstance(error, Exception) else "interrupted"
+            if span is not None:
+                from opentelemetry.trace import Status, StatusCode
+
+                from app.providers.client import ProviderFailure
+
+                span.set_status(Status(StatusCode.ERROR))
+                span.set_attribute("langfuse.observation.level", "ERROR")
+                if isinstance(error, ProviderFailure):
+                    span.set_attribute("langfuse.observation.status_message", error.code)
+            raise
+        finally:
+            if span is not None:
+                usage = {
+                    key: value for key, value in (
+                        ("input", step.input_tokens), ("output", step.output_tokens)
+                    ) if value is not None
+                }
+                if usage:
+                    span.set_attribute("langfuse.observation.usage_details", json.dumps(usage))
+                span.set_attribute("langfuse.observation.metadata.outcome", outcome)
+                for key in ("first_text_ms", "reasoning_tokens"):
+                    value = step.details.get(key)
+                    if isinstance(value, int):
+                        span.set_attribute("langfuse.observation.metadata." + key, value)
+                span.set_attribute(
+                    "langfuse.observation.metadata.usage_complete",
+                    step.input_tokens is not None and step.output_tokens is not None,
+                )
+
+
+@contextmanager
+def _record_step(
     kind: str, name: str, iteration: int | None = None, **details: object
 ) -> Iterator[Step]:
     """持久化步骤开始和结束，异常只记录类型及已定义错误码。"""

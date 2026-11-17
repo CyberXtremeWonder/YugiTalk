@@ -75,8 +75,8 @@ RETRIEVAL_MIN_SCORE: ${RETRIEVAL_MIN_SCORE:-0.35}
 
 | 项目 | 当前实现 | 调整位置与影响 |
 | --- | --- | --- |
-| 分块 | 默认 700 字符，步长 600，重叠 100；按页切片。上传 Markdown 可显式指定 `chunk_strategy=markdown_sections`，先按标题隔离小节再切块 | `rag/parser.py:parse()`；新策略只影响新上传文档，需重新导入、嵌入和索引，不会迁移旧文档 |
-| 父块 | 同页相邻最多 3 个叶子组成父块；新小节策略同时禁止跨小节合并 | `rag/hierarchy.py:attach_parents()`；调整后需重建父子关系，普通索引升级脚本不能代替任意分块策略迁移 |
+| 分块 | 默认 `auto`，按结构、长度和语言选择短文、长文、token、结构化或超长规则，可手动覆盖；先父后子，固定大小子块重叠 10% | `rag/chunking.py`；规则见 [文档分块](../DOCUMENT_CHUNKING.md)。已有资料需重新索引才会采用新规则 |
+| 父块 | 新策略按独立长度上限或章节生成，子块数量不限，命中一个子块即可展开父块；旧策略保持三子一父及原合并比例 | `rag/hierarchy.py:attach_parents()`、`rag/retrieval.py:materialize()`；调整后需完整重新索引 |
 | 重叠合并 | 最多查找 100 字符的相邻重叠 | `rag/hierarchy.py:join_overlaps()`；改变解析重叠时要同步检查 |
 | 召回融合 | 等权 RRF，平滑常数 60 | `rag/retrieval.py:rrf()`；图谱再与已融合的普通候选做一次排名融合，不是三路原始得分直接相加 |
 | 最终来源 | 最多 5 条，加总字符限制 | `rag/retrieval.py:pack_evidence()`；修改需要同步评测 K 范围及聊天引用、页面和相关测试 |

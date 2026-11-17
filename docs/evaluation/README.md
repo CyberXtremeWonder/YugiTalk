@@ -1,4 +1,18 @@
-# 阶段6评测资料
+# 检索 生成与性能评测目录
+
+导航更新：2026 年 11 月 13 日。每份报告保留当次数据、资源、日期和限制；下列历史数值不代表当前部署效果。
+
+| 主题 | 报告与方法 |
+| --- | --- |
+| 检索与调参 | [评测使用](RETRIEVAL_EVALUATION.md)、[调优](RAG_TUNING.md)、[MIRACL 训练](MIRACL_TRAIN.md) |
+| 分块与合并 | [分块配置](CHUNK_PROFILES.md)、[Token 分块](TOKEN_CHUNKING.md)、[句子合并](SENTENCE_MERGING.md) |
+| 生成与执行 | [中文 RAG 生成](CHINESE_RAG_GENERATION.md)、[Agent 延迟](AGENT_LATENCY.md) |
+| 并发与容量 | [数据库准入改进](CONCURRENCY_IMPROVEMENT.md)、[3000 请求](USERS_3000.md)、[10000 峰值](PEAK_USERS_10000.md) |
+| 存储比较 | [向量库验证范围](VECTOR_STORES.md) |
+
+有节奏请求与同时突发分别报告，受控 503 不能计为成功；Page Hit、Recall 和 MRR 不等于生成答案准确率。不同数据集、候选池、模型和硬件的结果不直接横向比较。
+
+## 历史基线与质量用例
 
 当前知识库可自行运行检索评测脚本，查看 Recall@5、Hit@5、完整证据命中率、耗时及逐题来源；配置、标注方法和指标口径见 [检索评测使用说明](./RETRIEVAL_EVALUATION.md)。
 

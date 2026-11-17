@@ -23,23 +23,23 @@
 
 启动分为镜像构建和服务启动两步，构建时显示完整依赖下载日志。首次下载可能持续数分钟；后端 pip 下载使用构建缓存，中断后重试可复用已下载内容。未改依赖时后续构建通常复用整个安装层。
 
-此入口直接使用 Docker Compose，不依赖 WSL 或 Bash，已存在的 `.env` 和数据继续保留，启动结果与下方 `.sh` 一致。
+此入口直接使用 Docker Compose，不依赖 WSL 或 Bash，已存在的 `.env` 和数据继续保留，启动结果与下方显式 Compose 启动一致。
 
-PowerShell 中裸写 `bash` 可能调用系统 WSL；如果出现 `execvpe(/bin/bash) failed`，表示 WSL 缺少 Bash，尚未执行项目脚本。此时使用 `start.ps1`，或在已安装的 Git Bash 终端中运行 `bash start.sh`，无需为启动项目安装 WSL。
+PowerShell 中裸写 `bash` 可能调用系统 WSL；如果出现 `execvpe(/bin/bash) failed`，表示 WSL 缺少 Bash，尚未执行项目脚本。此时使用 `start.ps1`，或使用下面的显式 Compose 命令，无需为启动项目安装 WSL。
 
-## Bash 一键启动
+## Linux 和 macOS 启动
 
-Linux、macOS、WSL 或 Git Bash 中，在项目目录执行：
+仓库当前仅提供 Windows 的 start.ps1，没有 start.sh。Bash 使用显式 Compose：
 
 ```bash
-bash start.sh
+test -f .env || cp .env.example .env
+# 首次编辑 .env，设置本机模型路径或远程嵌入。
+mkdir -p data/postgres data/redis data/minio data/etcd data/milvus .cache/models
+docker compose config --quiet
+docker compose up --build -d --wait --wait-timeout 600
 ```
 
-脚本自动定位项目目录，检查 Docker／Compose，初始化缺失的持久目录，校验配置，再构建并启动前端、API、迁移、Worker、Scheduler 及数据库等依赖，等待健康检查通过。使用已有 `.env`，不覆盖密钥与数据；未找到 `.env` 时仅复制模板并停止，须先填写配置后重新运行。不会创建默认账号。
-
-打开 `http://127.0.0.1:8080/`，API 文档默认在 `http://127.0.0.1:18000/docs`，自定义端口以 `.env` 中的 `API_BIND_PORT` 为准。停止时在项目目录执行 `docker compose stop`，保留数据。
-
-这是 Docker 完整开发环境启动入口，不启动 5173／8000 的本机热更新进程。启用本地嵌入时，先在 `.env` 配置 `COMPOSE_PROFILES=local-embedding` 和当前操作系统可访问的 `BGE_MODEL_PATH`，不会自动下载模型；远程 Embedding 不需启用该 profile。原 Windows 模型路径不能直接用于另一台 Linux 主机。
+不会下载 BGE 权重或创建默认账号。Docker 页面默认 8080，API 默认 18000；本机热更新为 5173/8000。模型路径必须适配当前主机，不照抄 Windows 盘符。
 
 ## 1. 准备配置
 
@@ -188,14 +188,14 @@ docker compose logs --tail 100 migrate api worker scheduler embedding
 | 密码错误 | 使用开发库中的账号和密码；初始化已存在账号不会重设密码 |
 | 工具尚未配置就绪 | 在 Tool 页面核对密钥与白名单，再重建 `api worker scheduler` 以加载 `.env`；本机 API 也需重启 |
 
-本轮只核对启动入口、配置与命令，不自动启动开发栈或迁移开发数据。七步 RAG 的真实存储集成此前在 Milvus 2.5.27 隔离环境通过；当前开发配置锁定的 Milvus 2.5.14 仍需启动后单独核验。
+本文是操作指南，不能据此推断运行状态。不同版本 Milvus、模型和参数下的历史结果不能直接互换，更新后应当场验证服务健康和所需业务路径。
 
 ## 5. 停止服务与缓存清理
 
 本机前后端终端按 `Ctrl+C`。开发容器在项目根目录停止：
 
 ```powershell
-docker compose down
+docker compose stop
 ```
 
 业务数据仍保存在项目 `data/` 下，不要删除这些目录。独立阶段六测试环境使用不同 Compose 参数停止，见 [部署说明](./DEPLOYMENT.md#隔离验收和停止服务)。
@@ -217,3 +217,9 @@ docker compose down
 `. ./scripts/set-project-cache.ps1` 会设置当前终端的 `HF_DATASETS_CACHE`；`backend/get_huggingface_data.py` 也显式使用项目缓存路径。迁移包含原始下载、解压结果及 Arrow 语料，逐文件校验大小和 SHA-256 后才清理 C 盘原件。不会改变模型权重缓存位置。
 
 迁移校验清单位于 `.cache/huggingface/datasets-migration.json`。清理 C 盘时不要递归清空旧路径下的内容，它指向 E 盘语料；如需取消兼容路径，应只移除目录联接本身。
+
+## GPU 与多环境维护
+
+start.ps1 会探测已经安装的 CUDA 嵌入镜像，确认可用时保留 GPU 覆盖。手工维护原 GPU 环境时继续使用 `-f docker-compose.yml -f docker-compose.gpu.yml`；网关另按原覆盖文件操作，不把它当成独立一套数据。环境区分、监控、排障和停止操作统一见 [RUNBOOK](RUNBOOK.md)。
+
+源码迁移头当前为 `0027_memory_importance`，实际数据库状态用 `alembic current` 或 SQL 查询核对。只有文档编辑不需要重新部署；不要为了文档整理启动迁移、覆盖 .env 或清理 data。

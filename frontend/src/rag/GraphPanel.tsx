@@ -1,9 +1,12 @@
+import { useNotice } from "../shared/useNotice";
 import { useEffect, useState } from "react";
 import { identityRequest } from "../identity/api";
+import { GraphExplorer } from "./GraphExplorer";
 
 interface GraphData {
   status: string;
   mode?: string;
+  index_version?: number;
   error_code?: string;
   entity_count?: number;
   has_more?: boolean;
@@ -31,13 +34,15 @@ const statuses: Record<string, string> = {
 export function GraphPanel({
   documentId,
   csrf,
+  expanded = false,
 }: {
   documentId: string;
   csrf: string;
+  expanded?: boolean;
 }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(expanded);
   const [data, setData] = useState<GraphData | null>(null);
-  const [notice, setNotice] = useState("");
+  const { notice, setNotice, noticeIsError, reportError } = useNotice();
   const [busy, setBusy] = useState(false);
   const [revision, setRevision] = useState(0);
   useEffect(() => {
@@ -56,8 +61,10 @@ export function GraphPanel({
         if (["queued", "building"].includes(result.status))
           timer = setTimeout(refresh, 3000);
       } catch (error) {
-        if (active)
-          setNotice(error instanceof Error ? error.message : "读取图谱失败");
+        if (active) {
+          setData(null);
+          reportError(error instanceof Error ? error.message : "读取图谱失败");
+        }
       }
     };
     void refresh();
@@ -81,54 +88,67 @@ export function GraphPanel({
       // revision 触发 effect 重新启动轮询；仅更新 data 不会重新建立刷新循环。
       setRevision((value) => value + 1);
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "提交失败");
+      reportError(error instanceof Error ? error.message : "提交失败");
     } finally {
       setBusy(false);
     }
   };
 
-  return (
-    <details onToggle={(event) => setOpen(event.currentTarget.open)}>
-      <summary>知识图谱与原文依据</summary>
-      {notice && <p role="alert">{notice}</p>}
+  const content = (
+    <>
+      {!data && !notice && <p role="status">正在读取知识图谱…</p>}
+      {notice && <p role={noticeIsError ? "alert" : "status"}>{notice}</p>}
       {data && (
         <>
-          <p>
-            图谱：{statuses[data.status] || "暂不可用"}
-            {data.entity_count !== undefined &&
-              ` · ${data.entity_count} 个实体`}
-          </p>
-          {["queued", "building"].includes(data.status) &&
-            data.total_chunks !== undefined && (
-              <p aria-live="polite">
-                已处理 {data.completed_chunks ?? 0}/{data.total_chunks} 个分块
+          <div className="graph-build-status">
+            <p>
+              图谱：{statuses[data.status] || "暂不可用"}
+              {data.entity_count !== undefined &&
+                ` · ${data.entity_count} 个实体`}
+            </p>
+            {["queued", "building"].includes(data.status) &&
+              data.total_chunks !== undefined && (
+                <p aria-live="polite">
+                  已处理 {data.completed_chunks ?? 0}/{data.total_chunks} 个分块
+                </p>
+              )}
+            {data.mode === "mock" && (
+              <p>当前为演示模式，未调用模型抽取关系。</p>
+            )}
+            {data.status === "failed" && (
+              <p>
+                图谱未构建成功，可检查模型服务后重试。普通知识问答仍可使用。
               </p>
             )}
-          {data.mode === "mock" && <p>当前为演示模式，未调用模型抽取关系。</p>}
-          {data.status === "failed" && (
-            <p>图谱未构建成功，可检查模型服务后重试。普通知识问答仍可使用。</p>
+            {expanded && !["queued", "building"].includes(data.status) && (
+              <button disabled={busy} onClick={() => void rebuild()}>
+                {data.status === "ready" ? "重新构建图谱" : "构建图谱"}
+              </button>
+            )}
+          </div>
+          {!!data.facts.length && (
+            <GraphExplorer
+              facts={data.facts}
+              indexVersion={data.index_version}
+            />
           )}
-          {!["queued", "building"].includes(data.status) && (
-            <button disabled={busy} onClick={() => void rebuild()}>
-              {data.status === "ready" ? "重新构建图谱" : "构建图谱"}
-            </button>
-          )}
-          <ul>
-            {data.facts.map((fact, index) => (
-              <li key={`${fact.chunk_id}-${index}`}>
-                <strong>
-                  {fact.source} → {fact.relation} → {fact.target}
-                </strong>
-                <blockquote>{fact.quote}</blockquote>
-              </li>
-            ))}
-          </ul>
           {data.status === "ready" && !data.facts.length && (
             <p>没有抽取到可用关系。</p>
           )}
           {data.has_more && <p>此处仅展示前 100 条关系依据。</p>}
         </>
       )}
+    </>
+  );
+  return expanded ? (
+    <section className="graph-panel">{content}</section>
+  ) : (
+    <details
+      className="graph-panel"
+      onToggle={(event) => setOpen(event.currentTarget.open)}
+    >
+      <summary>知识图谱与原文依据</summary>
+      {open && content}
     </details>
   );
 }

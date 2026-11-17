@@ -1,0 +1,56 @@
+.composer-bottom .chat-upload-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  padding: 4px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.chat-upload-button > span:first-child {
+  font-size: 20px;
+}
+.chat-upload-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.chat-upload-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  list-style: none;
+  margin: 0;
+  padding: 8px 12px 0;
+}
+.chat-upload-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--canvas);
+  font-size: 12px;
+}
+.chat-upload-list li span {
+  overflow-wrap: anywhere;
+}
+.chat-upload-list button {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+@media (max-width: 600px) {
+  .composer-bottom {
+    flex-wrap: wrap;
+  }
+  .composer-bottom .chat-upload-button {
+    order: 0;
+  }
+}

@@ -2,8 +2,12 @@ import { monitoredFetch, reportRuntimeFailure } from "../shared/monitoring";
 
 export interface Run {
   id: string;
+  message_sequence?: number;
   status: string;
   error_code: string | null;
+  conversation_title?: string;
+  prompt_preview?: string;
+  created_at?: string;
   knowledge_base_id?: string | null;
   skill?: {
     name: string;
@@ -22,6 +26,7 @@ export interface Run {
   checkpoint_node?: string;
   event_sequence?: number;
   state_version?: number;
+  steering_supported?: boolean;
   clarification?: {
     prompt: string;
     options: string[];
@@ -34,6 +39,9 @@ export interface RunEvent {
   payload: {
     text?: string;
     stage?: string;
+    retrieval_id?: string;
+    query?: string;
+    query_count?: number;
     steps?: { title: string; criterion: string; status?: string }[];
     name?: string;
     status?: string;
@@ -57,7 +65,7 @@ export async function readEvents(
       // 重连只补读游标之后的事件；后台任务不会随这条 HTTP 连接重新执行。
       const separator = run.events_url.includes("?") ? "&" : "?";
       const response = await monitoredFetch(
-        `${run.events_url}${separator}types=text_delta,tool_status`,
+        `${run.events_url}${separator}types=text_delta,tool_status,run_state`,
         {
           credentials: "same-origin",
           signal,

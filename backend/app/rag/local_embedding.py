@@ -123,7 +123,7 @@ class EmbeddingInput(BaseModel):
     """限定嵌入服务的模型标识与批量输入数量。"""
 
     model: str = MODEL_ID
-    input: list[str] = Field(min_length=1, max_length=16)
+    input: list[str] = Field(min_length=1, max_length=64)
 
 
 @app.get("/health")
@@ -154,7 +154,22 @@ def embeddings(data: EmbeddingInput, authorization: str = Header(default="")) ->
         if model is None:
             raise HTTPException(503)
         try:
-            vectors = model.encode(data.input, batch_size=4, normalize_embeddings=True).tolist()
+            default_batch = "16" if str(model.device).startswith("cuda") else "4"
+            batch_size = min(
+                len(data.input), max(1, int(os.getenv("BGE_BATCH_SIZE", default_batch))),
+            )
+            while True:
+                try:
+                    vectors = model.encode(
+                        data.input, batch_size=batch_size, normalize_embeddings=True,
+                    ).tolist()
+                    break
+                except torch.cuda.OutOfMemoryError:
+                    torch.cuda.empty_cache()
+                    if batch_size <= 1:
+                        raise
+                    batch_size = max(1, batch_size // 2)
+                    logger.warning("CUDA 显存不足，降低推理批量至 %s 后重试", batch_size)
         except torch.cuda.OutOfMemoryError:
             if os.getenv("BGE_DEVICE", "auto") != "auto":
                 raise

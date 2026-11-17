@@ -46,6 +46,19 @@ def uploaded(client, text="Milvus 保存向量，PostgreSQL 保存元数据。")
     return identity, headers, key, doc
 
 
+def test_listing_keeps_lower_ranked_evidence_within_same_budget():
+    """名单问题保留前五之外的候选，普通问题继续五条，截断标记保持有效。"""
+    candidates = [{"evidence_id": f"E-{i}", "content": f"角色{i}：" + "背景资料" * 200}
+                  for i in range(21)]
+    listing = pack_evidence(candidates, 5000, question="作品的角色有哪些？")
+    assert len(listing) == 20
+    assert listing[7]["evidence_id"] == "E-7"
+    assert sum(len(item["content"]) for item in listing) <= 5000
+    assert all(item["truncated"] for item in listing)
+    assert pack_evidence(listing, 5000, question="角色名单") == listing
+    assert len(pack_evidence(candidates, 5000, question="这个作品是什么？")) == 5
+
+
 def rag_task(client, headers, base_id, question):
     """建立知识库任务，停掉准备阶段的普通任务以保持并发限制。"""
     task_headers, body, original, _ = setup_task(client, token_budget=100000)
@@ -203,7 +216,7 @@ def test_auto_merge_identity_version_and_revocation(client, storage):
             [{"id": child.id, "rrf_score": 0.03} for child in children[:2]],
         )
         assert sources[0]["merged"] and sources[0]["content"] == parent.content
-        assert len(sources[0]["child_ids"]) == 3
+        assert len(sources[0]["child_ids"]) == parent.child_count
         again = materialize(
             db,
             settings,
@@ -259,6 +272,7 @@ def test_grader_reads_packed_evidence_without_second_truncation(client, characte
         async def call(self, schema, purpose, payload, deadline):
             """捕获真实评判输入，检查预算、原文及证据身份。"""
             assert purpose == "grade"
+            assert payload["question"] == "用户实际提出的问题"
             received.extend(payload["evidence"])
             visible = any(answer in source["content"] for source in received)
             return EvidenceGrade(
@@ -277,6 +291,7 @@ def test_grader_reads_packed_evidence_without_second_truncation(client, characte
         lambda *args: None,
         lambda state: None,
         Model(),
+        answer_question="用户实际提出的问题",
     ).run(
         "",
         {
@@ -326,16 +341,24 @@ def test_one_rewrite_one_regrade_and_hyde_never_evidence(client, storage, monkey
             )
 
     snapshots = []
+    events = []
     state = RagPipeline(
         client.app.state.database,
         settings,
         identity["user"]["id"],
         identity["user"]["id"],
         key,
-        lambda *args: None,
+        lambda kind, payload, reserve: events.append(payload) if kind else None,
         lambda state: snapshots.append(copy.deepcopy(state)),
         Model(),
     ).run("Milvus 保存向量")
+    progress = [event for event in events if event["stage"].startswith("rag_")]
+    assert len({event["retrieval_id"] for event in progress}) == 1
+    assert all(event["query"] == "Milvus 保存向量" for event in progress)
+    assert [
+        event["query_count"] for event in progress if event["stage"] == "rag_retrieve"
+    ] == [1, 1]
+    assert [event["query_count"] for event in progress if event["stage"] == "rag_plan"] == [0, 1]
     assert calls == ["grade", "rewrite", "grade"]
     assert state["rewrite_count"] == 1 and state["grade_count"] == 2 and state["sources"] == []
     assert next(row["method"] for row in state["trace"] if row["stage"] == "rewrite") == method

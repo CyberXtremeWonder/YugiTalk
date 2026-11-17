@@ -1,5 +1,6 @@
 """集中校验环境配置，生产环境拒绝不完整或不安全的默认设置。"""
 
+import math
 from pathlib import Path
 from typing import Literal, Self, cast
 from urllib.parse import urlsplit
@@ -8,6 +9,27 @@ from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
+
+
+def model_url_allowed(value: str, environment: str) -> bool:
+    """发布、普通对话和结构化调用共用模型地址策略，开发本机允许 HTTP。"""
+    try:
+        target = urlsplit(value)
+        _ = target.port
+    except ValueError:
+        return False
+    if (not target.hostname or target.username or target.password
+            or target.query or target.fragment):
+        return False
+    return target.scheme == "https" or (
+        target.scheme == "http" and (
+            environment == "test" or (
+                environment == "development" and target.hostname in {
+                    "localhost", "127.0.0.1", "::1", "host.docker.internal",
+                }
+            )
+        )
+    )
 
 
 class Settings(BaseSettings):
@@ -20,10 +42,18 @@ class Settings(BaseSettings):
     app_host: str = "127.0.0.1"
     app_port: int = Field(default=8000, ge=1, le=65535)
     app_reload: bool = False
+    app_workers: int = Field(default=1, ge=1, le=32)
     # 本机默认地址与开发 Compose 的宿主端口一致；容器内地址由环境变量覆盖。
     database_url: SecretStr = SecretStr(
         "postgresql://yugitalk:dev-database-only@127.0.0.1:25432/yugitalk"
     )
+    database_pool_size: int = Field(default=5, ge=1, le=200)
+    database_max_overflow: int = Field(default=10, ge=0, le=200)
+    database_pool_timeout_seconds: float = Field(default=5, gt=0, le=30)
+    api_database_concurrency: int = Field(default=10, ge=1, le=200)
+    api_database_queue_limit: int = Field(default=100, ge=0, le=10_000)
+    api_database_queue_timeout_seconds: float = Field(default=1, gt=0, le=10)
+    run_event_fallback_seconds: float = Field(default=5, ge=0.1, le=30)
     redis_url: SecretStr = SecretStr("redis://127.0.0.1:26379/0")
     storage_endpoint: str = "http://127.0.0.1:29000"
     storage_access_key: SecretStr = SecretStr("dev-storage-user")
@@ -45,16 +75,28 @@ class Settings(BaseSettings):
     # 自定义工具仅调用运维明确允许的公共域名；凭证值只留在服务端配置中。
     tool_http_allowed_hosts: list[str] = Field(default_factory=list)
     tool_secrets: dict[str, SecretStr] = Field(default_factory=dict)
+    aria2_rpc_url: str = ""
+    aria2_rpc_secret: SecretStr = SecretStr("")
+    torrent_download_root: str = "/downloads"
+    # 仅允许用户从部署者显式开放的目录中选择工作空间；默认不开放文件读取。
+    workspace_allowed_roots: list[str] = Field(default_factory=list, max_length=20)
     amap_api_key: SecretStr = SecretStr("")
     tavily_api_key: SecretStr = SecretStr("")
     # 嵌入模型独立于聊天模型；默认调用本地离线 BGE-M3 服务。
     embedding_provider: Literal["openai_compatible", "mock"] = "openai_compatible"
     embedding_model: str = "BAAI/bge-m3"
+    bge_model_path: str = "./.cache/models/models--BAAI--bge-m3"
     embedding_revision: str = "5617a9f61b028005a4858fdac845db406aefb181"
     embedding_dimension: int = Field(default=1024, ge=64, le=4096)
     embedding_base_url: str = "http://127.0.0.1:18081/v1"
     embedding_api_key: SecretStr = SecretStr("dev-embedding-key")
     embedding_timeout_seconds: float = Field(default=120, ge=1, le=300)
+    embedding_batch_size: int = Field(default=16, ge=1, le=64)
+    # 顺序：相关性、用户重要性、时间；实验确定默认值，三项非负且和为一。
+    memory_ranking_weights: tuple[float, float, float] = (0.90, 0.05, 0.05)
+    memory_recency_half_life_days: float = Field(default=90, gt=0, allow_inf_nan=False)
+    memory_embedding_timeout_seconds: float = Field(default=5, ge=1, le=30)
+    docling_url: str = "http://127.0.0.1:18082"
     vector_collection_prefix: str = Field(default="yugitalk_kb", pattern=r"^[a-z][a-z0-9_]{0,38}$")
     retrieval_min_score: float = Field(default=0.35, ge=0, le=1)
     # 七步 RAG 的次数、并发和输入边界由程序约束，模型不得自行放宽。
@@ -78,6 +120,10 @@ class Settings(BaseSettings):
     rag_rerank_cooldown_seconds: float = Field(default=30, ge=1, le=300)
     session_secret: SecretStr = SecretStr("dev-session-key-not-for-production")
     session_ttl_seconds: int = Field(default=28_800, ge=60, le=604_800)
+    # 身份记录清理默认关闭；启用后独立低频执行，每表每轮只有一个有界批次。
+    identity_cleanup_enabled: bool = False
+    identity_cleanup_interval_seconds: int = Field(default=86_400, ge=60, le=604_800)
+    identity_cleanup_batch_size: int = Field(default=500, ge=1, le=1000)
     registration_enabled: bool = True
     smtp_host: str = ""
     smtp_port: int = Field(default=465, ge=1, le=65535)
@@ -117,17 +163,27 @@ class Settings(BaseSettings):
     model_max_retries: int = Field(default=2, ge=0, le=3)
     # 流式协议包含逐帧元数据与非正文增量，容量独立于回答正文和 Token 额度。
     model_max_stream_bytes: int = Field(default=4_194_304, ge=262_144, le=16_777_216)
+    # 服务端请求容量保护，按 UTF-8 字节计；不等同于供应商模型的 Token 窗口。
+    model_context_limit_bytes: int = Field(default=131_072, ge=4096, le=4_194_304)
     # 文字在生成层按 128 字符／150ms 合并；此处限制持久事件数，不限制 Token 数。
     # 上限仍为终态预留位置，异常不能让事件流悄悄结束。
     run_event_limit: int = Field(default=1000, ge=20, le=5000)
     run_event_retention_seconds: int = Field(default=86_400, ge=60)
     otel_exporter_otlp_endpoint: str = ""
+    yugitalk_otlp_headers: dict[str, SecretStr] = Field(default_factory=dict)
     otel_sample_ratio: float = Field(default=0.1, ge=0, le=1)
     metrics_token: SecretStr = SecretStr("")
 
     @model_validator(mode="after")
     def validate_environment(self) -> Self:
         """先检查 URL 格式，再校验生产边界；错误消息不包含原始值。"""
+        if (any(not math.isfinite(w) or w < 0 for w in self.memory_ranking_weights)
+                or not math.isclose(sum(self.memory_ranking_weights), 1, abs_tol=1e-9)):
+            raise ValueError("MEMORY_RANKING_WEIGHTS 必须为三个非负有限数，且和为 1")
+        if self.app_reload and self.app_workers != 1:
+            raise ValueError("APP_RELOAD 与多进程 APP_WORKERS 不能同时启用")
+        if self.api_database_concurrency > self.database_pool_size + self.database_max_overflow:
+            raise ValueError("API_DATABASE_CONCURRENCY 不能超过数据库单池连接上限")
         db = urlsplit(self.database_url.get_secret_value())
         redis = urlsplit(self.redis_url.get_secret_value())
         storage = urlsplit(self.storage_endpoint)

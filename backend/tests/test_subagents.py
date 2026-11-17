@@ -55,7 +55,60 @@ def execute(client, task, providers):
     return client.get(f"/api/v1/runs/{task['id']}").json()
 
 
-WORKER_TOOLS = ["text_stats", "list_knowledge_bases", "knowledge_search"]
+WORKER_TOOLS = [
+    "text_stats", "list_knowledge_bases", "knowledge_search", "research_report", "export_document",
+]
+
+
+def test_large_knowledge_result_can_reach_answer_without_losing_evidence(client):
+    """20 条来源的大量内部 ID 不应挤掉最终回答；原始工具结果保持完整。"""
+    import copy
+
+    from app.agents.contracts import AgentConfig
+    from app.agents.graph import run_graph
+    from app.agents.subagents import SCHEMAS
+
+    sources = [{"evidence_id": f"E-{i}", "content": f"角色{i}：" + "资料" * 90,
+                "child_ids": [str(i) * 36] * 30, "document_id": str(i) * 36,
+                "filename": "百科.jsonl", "knowledge_base_id": "base"} for i in range(20)]
+    result = {"ok": True, "coverage": "partial", "sources": sources}
+    original = copy.deepcopy(result)
+    assert len(json.dumps(result).encode()) > 32768
+
+    def answer(messages):
+        visible = json.loads(messages[-1]["content"])
+        assert len(visible["sources"]) == 20
+        assert [s["content"] for s in visible["sources"]] == [s["content"] for s in sources]
+        assert all("child_ids" not in s for s in visible["sources"])
+        return "依据全部二十条来源回答"
+
+    provider = Script([tool("knowledge_search", knowledge_base_id="base", query="角色"), answer],
+                      ["knowledge_search"])
+    provider.tool_schemas = {"knowledge_search": SCHEMAS["knowledge_search"]}
+    events = []
+    state = run_graph(
+        client.app.state.settings, AgentConfig(name="测试", tools=["knowledge_search"]),
+        provider,
+        [{"role": "user", "content": "列出角色"}],
+        lambda kind, payload, charge: events.append((kind, payload)), lambda text: None, 0,
+        tool_executor=lambda *args: result,
+    )
+    assert state["text"]
+    assert result == original
+    assert [payload["status"] for kind, payload in events
+            if kind == "tool_status" and payload.get("stage") == "tool"] == [
+        "running", "succeeded",
+    ]
+
+
+def test_platform_retrieval_origin_is_separate_from_mcp():
+    from app.agents.subagents import tool_origins
+
+    origins = tool_origins({"tool_catalog": {"web_search": {"kind": "http"}}})
+    assert origins["web_search"]["source"] == "http"
+    assert origins["knowledge_search"]["source"] == "platform_knowledge"
+    assert origins["list_knowledge_bases"]["source"] == "platform_knowledge"
+    assert all(tool["source"] != "mcp" for tool in origins.values())
 
 
 def test_router_delegates_tools_and_keeps_child_text_private(client):
@@ -63,7 +116,10 @@ def test_router_delegates_tools_and_keeps_child_text_private(client):
 
     def summary(messages):
         result = json.loads(messages[-1]["content"])
-        assert result == {"ok": True, "summary": "子助手内部结果"}
+        assert result == {
+            "ok": True, "summary": "子助手内部结果",
+            "tool_usage": [{"name": "text_stats", "source": "builtin", "status": "succeeded"}],
+        }
         return "最终答案"
 
     result = execute(
@@ -136,10 +192,62 @@ def test_automatic_rag_uses_real_pipeline_and_preserves_sources(client, storage)
     sources = messages["items"][-1]["sources"]
     assert {item["knowledge_base_id"] for item in sources} == {first, second}
     for source in sources:
+        params = {"evidence_id": source["evidence_id"]}
+        if source.get("merged"):
+            params["parent_id"] = source["parent_id"]
         response = client.get(
-            f"/api/v1/sources/{source['chunk_id']}", params={"evidence_id": source["evidence_id"]}
+            f"/api/v1/sources/{source['chunk_id']}", params=params
         )
         assert response.status_code == 200
+
+
+def test_automatic_rag_keeps_evidence_beyond_2000_characters(client, storage, monkeypatch):
+    """评分通过的五条来源完整交给助手，不再额外截断到两千字。"""
+    from app.rag.models import Chunk, Document
+
+    _, _, base_id, document = uploaded(
+        client, "\n\n".join(f"# Section {i}\n" + f"Role{i} facts " * 50 for i in range(5))
+    )
+    with Session(client.app.state.database) as db:
+        doc = db.get(Document, document["id"])
+        chunks = list(db.scalars(select(Chunk).where(
+            Chunk.document_id == doc.id,
+        ).order_by(Chunk.ordinal)))
+        sources = [{
+            "evidence_id": "E-" + chunk.id.replace("-", "")[:24],
+            "content": chunk.content,
+            "document_id": doc.id,
+            "chunk_id": chunk.id,
+            "index_version": doc.index_version,
+            "collection_name": doc.collection_name,
+            "embedding_version": doc.embedding_version,
+        } for chunk in chunks[:5]]
+    assert len(sources) == 5
+    assert 2000 < sum(len(source["content"]) for source in sources) < 5000
+
+    async def pipeline(self, question, resume):
+        """隔离模型评分，仅检查有权访问的真实 SQL 分块在工具边界的传递。"""
+        assert self.answer_question == "比较两个任务的结果"
+        assert question == "Role"
+        return {"phase": "done", "route": "partial_answer", "sources": sources}
+
+    monkeypatch.setattr("app.agents.subagents.RagPipeline.execute", pipeline)
+    _, _, task, _ = setup_task(client, tools=["text_stats"], token_budget=100000)
+
+    def answer(messages):
+        result = json.loads(messages[-1]["content"])
+        assert [source["content"] for source in result["sources"]] == [
+            source["content"] for source in sources
+        ]
+        assert result["coverage"] == "partial"
+        return "根据五条来源回答"
+
+    result = execute(client, task, [
+        Script([tool("delegate_task", task="列出资料"), "最终回答"], ["delegate_task"]),
+        Script([tool("knowledge_search", knowledge_base_id=base_id, query="Role"), answer],
+               WORKER_TOOLS),
+    ])
+    assert result["status"] == "succeeded", result
 
 
 def test_other_users_knowledge_is_not_listed_or_searched(client, storage, monkeypatch):

@@ -5,13 +5,38 @@ from collections.abc import Iterator
 
 import httpx
 import pytest
-from app.core.config import Settings
-from app.providers.client import HTTPProvider, ProviderFailure
-from app.tasks.execution import Execution
 from pydantic import SecretStr
 from test_agents import setup_task
 
+from app.core.config import Settings
+from app.providers.client import HTTPProvider, ProviderFailure
+from app.tasks.execution import Execution
+
 pytest_plugins = ["test_identity"]
+
+
+@pytest.mark.parametrize("message,code,attempts", [
+    ("No user query found in messages.", "model_context_template", 1),
+    ("server busy", "model_transient", 3),
+])
+def test_template_error_is_not_retried_as_transient(monkeypatch, message, code, attempts):
+    """固定模板错误有明确公开码，普通服务暂时故障保留原重试行为。"""
+    from app.providers import client as provider_client
+
+    monkeypatch.setattr(provider_client.time, "sleep", lambda _: None)
+    requests = []
+
+    def respond(request):
+        """离线模拟供应商错误，响应正文不进入公开错误。"""
+        requests.append(request)
+        return httpx.Response(500, json={"error": {"message": message}})
+
+    settings = Settings(app_env="test", model_base_url="http://localhost:11434/v1",
+                        model_api_key=SecretStr("ollama"), model_max_retries=2)
+    provider = HTTPProvider(settings, "openai_compatible", "fixture", httpx.MockTransport(respond))
+    with pytest.raises(ProviderFailure, match=code):
+        list(provider.stream([{"role": "user", "content": "fixture"}], [], 32))
+    assert len(requests) == attempts
 
 
 def frame(payload: dict) -> str:
@@ -106,7 +131,7 @@ def test_fragmented_stream_finishes_task_and_saves_usage(client) -> None:
     settings.model_id = "stream-fixture"
     settings.model_api_key = SecretStr("offline-test-key")
     settings.model_base_url = "https://stream.example.test"
-    _, body, run, _ = setup_task(client)
+    _, body, run, _ = setup_task(client, token_budget=100000)
     transport = httpx.MockTransport(
         lambda request: httpx.Response(200, text="\n\n".join(fragmented("openai_compatible")))
     )

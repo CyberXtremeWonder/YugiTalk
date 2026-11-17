@@ -1,0 +1,66 @@
+.mcp-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  align-items: start;
+  gap: 24px;
+  margin-top: 24px;
+}
+
+.mcp-layout > .account-settings {
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+}
+
+.mcp-editor .agent-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.mcp-server-list {
+  display: grid;
+  gap: 12px;
+  max-height: min(70vh, 760px);
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  scrollbar-gutter: stable;
+  padding: 4px;
+}
+
+.mcp-server-list .mcp-server-card {
+  display: grid;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  overflow-wrap: anywhere;
+  background: var(--surface);
+}
+
+.mcp-server-card span,
+.mcp-server-card small {
+  color: var(--muted);
+}
+
+.mcp-server-list .mcp-server-card[aria-pressed="true"] {
+  background: var(--active);
+  border-color: var(--blue);
+}
+
+.mcp-server-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 8px;
+}
+
+.mcp-server-actions .mcp-delete-button {
+  color: var(--text);
+  background: var(--surface);
+}
+
+@media (max-width: 900px) {
+  .mcp-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

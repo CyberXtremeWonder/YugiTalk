@@ -3,16 +3,6 @@
 import json
 
 import pytest
-from app.agents.contracts import AgentConfig
-from app.core.config import Settings
-from app.providers.client import ProviderFailure, Reply, ToolCall
-from app.tasks.execution import Execution
-from app.tasks.ledger_models import ToolExecution
-from app.tasks.models import Run
-from app.tools.http_runtime import execute_http
-from app.tools.management_contracts import ToolInput
-from app.tools.service import bound_tool, secret_value
-from app.tools.web_search import WebSearch, search_config, search_result
 from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -20,6 +10,17 @@ from test_agent_graph import ScriptedProvider
 from test_agents import setup_task
 from test_identity import ORIGIN, login
 from test_tools_management import mock_http, tool_data
+
+from app.agents.contracts import AgentConfig
+from app.core.config import Settings
+from app.providers.client import ProviderFailure, Reply, ToolCall
+from app.tasks.execution import Execution
+from app.tasks.ledger_models import ToolExecution
+from app.tasks.models import Run
+from app.tools.http.contracts import ToolInput
+from app.tools.http.runtime import execute_http
+from app.tools.http.search import WebSearch, search_config, search_result
+from app.tools.service import bound_tool, secret_value
 
 pytest_plugins = ["test_identity"]
 
@@ -218,7 +219,7 @@ def test_large_pages_above_old_cap_are_reduced_to_excerpts(monkeypatch):
 
 def test_oversized_raw_response_falls_back_once_with_shared_deadline(monkeypatch):
     """正文过大后同一工具调用降级摘要；结果注明缺失正文，截止时间不重置。"""
-    from app.tools import http_runtime
+    from app.tools.http import runtime as http_runtime
 
     calls = []
 
@@ -246,7 +247,7 @@ def test_snippet_request_omits_full_page_content(monkeypatch):
     """降级请求确实禁用完整正文，而非再次发送相同的过大请求。"""
     import time
 
-    from app.tools import http_runtime
+    from app.tools.http import runtime as http_runtime
 
     records = mock_http(monkeypatch, payload())
     result = http_runtime._execute_http(

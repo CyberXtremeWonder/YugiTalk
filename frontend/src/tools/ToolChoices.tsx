@@ -7,10 +7,12 @@ export function ToolChoices({
   accountId,
   value,
   onChange,
+  onCatalog,
 }: {
   accountId: string;
   value: string[];
   onChange: (value: string[]) => void;
+  onCatalog?: (catalog: ToolEntry[]) => void;
 }) {
   const [catalog, setCatalog] = useState<ToolEntry[]>([]);
   const [error, setError] = useState("");
@@ -18,7 +20,10 @@ export function ToolChoices({
     let active = true;
     void allItems<ToolEntry>(`/me/tools`)
       .then((rows) => {
-        if (active) setCatalog(rows);
+        if (active) {
+          setCatalog(rows);
+          onCatalog?.(rows);
+        }
       })
       .catch((failure) => {
         if (active) setError(failure.message);
@@ -26,12 +31,13 @@ export function ToolChoices({
     return () => {
       active = false;
     };
-  }, [accountId]);
+  }, [accountId, onCatalog]);
   const choices = [
     // 目录项之外还保留草稿中的旧名称，让用户能主动撤销已删除工具的授权。
     ...catalog.map((item) => ({
       name: item.name,
       title:
+        (item.kind === "mcp" ? "MCP · " : "") +
         item.title +
         (!item.enabled ? "（已停用）" : !item.ready ? "（待配置）" : ""),
     })),

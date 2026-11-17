@@ -15,6 +15,14 @@ export const views = {
     empty: "",
     hint: "",
   },
+  usage: {
+    title: "Token 用量",
+    symbol: "▦",
+    color: "blue",
+    description: "各模型 Token 用量、费用明细与账户余额。",
+    empty: "暂无模型用量",
+    hint: "费用与余额以供应商接口返回为准。",
+  },
   chat: {
     title: "对话",
     symbol: "◉",
@@ -47,6 +55,14 @@ export const views = {
     empty: "尚无自定义工具",
     hint: "内置天气、路况和文本工具，可按需配置。",
   },
+  mcp: {
+    title: "MCP",
+    symbol: "⇄",
+    color: "blue",
+    description: "连接远程 MCP 服务器，管理个人工具授权。",
+    empty: "尚未添加 MCP 服务器",
+    hint: "支持 SSE 和 Streamable HTTP。",
+  },
   knowledge: {
     title: "知识库",
     symbol: "▤",
@@ -67,9 +83,9 @@ export const views = {
     title: "设置",
     symbol: "⚙",
     color: "orange",
-    description: "管理你的个人偏好与记忆。",
-    empty: "服务连接状态",
-    hint: "当前仅验证基础服务，尚未连接模型。",
+    description: "管理个人偏好与记忆设置。",
+    empty: "",
+    hint: "",
   },
   development: {
     title: "管理员面板",

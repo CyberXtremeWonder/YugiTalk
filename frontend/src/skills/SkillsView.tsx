@@ -1,3 +1,6 @@
+import { useNotice } from "../shared/useNotice";
+import type { ToolEntry } from "../tools/api";
+import "../shared/configuration.css";
 import { ToolChoices } from "../tools/ToolChoices";
 import { useEffect, useRef, useState } from "react";
 import { allItems, identityRequest, type Identity } from "../identity/api";
@@ -23,7 +26,10 @@ export function SkillsView({
   const [tools, setTools] = useState<string[]>([]);
   const [enabled, setEnabled] = useState(true);
   const [busy, setBusy] = useState(false);
-  const [notice, setNotice] = useState("");
+  const [search, setSearch] = useState("");
+  const [catalog, setCatalog] = useState<ToolEntry[]>([]);
+  const toolSection = useRef<HTMLDetailsElement>(null);
+  const { notice, setNotice, noticeIsError, reportError } = useNotice();
   const alive = useRef(true);
   const path = `/me/skills`;
   const canManage = !selected || selected.can_manage;
@@ -31,12 +37,17 @@ export function SkillsView({
   async function refresh() {
     const rows = await allItems<Skill>(path);
     if (alive.current) setSkills(rows);
+    return rows;
   }
   useEffect(() => {
     alive.current = true;
-    void refresh().catch((error) => {
-      if (alive.current) setNotice(error.message);
-    });
+    void refresh()
+      .then((rows) => {
+        if (alive.current && rows[0]) void open(rows[0]);
+      })
+      .catch((error) => {
+        if (alive.current) reportError(error.message);
+      });
     return () => {
       alive.current = false;
     };
@@ -67,7 +78,7 @@ export function SkillsView({
       setEnabled(detail.enabled);
     } catch (error) {
       if (alive.current)
-        setNotice(error instanceof Error ? error.message : "读取技能失败");
+        reportError(error instanceof Error ? error.message : "读取技能失败");
     } finally {
       if (alive.current) setBusy(false);
     }
@@ -92,7 +103,7 @@ export function SkillsView({
       );
     } catch (error) {
       if (alive.current)
-        setNotice(error instanceof Error ? error.message : "保存技能失败");
+        reportError(error instanceof Error ? error.message : "保存技能失败");
     } finally {
       if (alive.current) setBusy(false);
     }
@@ -126,133 +137,279 @@ export function SkillsView({
       );
     } catch (error) {
       if (alive.current)
-        setNotice(error instanceof Error ? error.message : "更新技能失败");
+        reportError(error instanceof Error ? error.message : "更新技能失败");
     } finally {
       if (alive.current) setBusy(false);
     }
   }
   return (
-    <section className="secondary-view" aria-labelledby="view-title">
-      <h1 id="view-title">Skill</h1>
-      <p>
-        把常用的工作流程保存为技能，在对话中按需使用。技能在当前工作账号内使用。
-      </p>
-      <div className="agent-layout">
-        <div className="agent-list skill-list">
-          <button disabled={busy} onClick={reset}>
+    <section
+      className="secondary-view configuration-workspace"
+      aria-labelledby="view-title"
+    >
+      <header className="cf-heading">
+        <div>
+          <h1 id="view-title">Skill</h1>
+          <p>把常用流程，变成可复用的技能。</p>
+        </div>
+      </header>
+      {notice && (
+        <p
+          className="cf-notice"
+          data-error={noticeIsError}
+          role={noticeIsError ? "alert" : "status"}
+        >
+          {notice}
+        </p>
+      )}
+      <div className="cf-three-columns">
+        <aside className="cf-catalog" aria-label="我的技能">
+          <h2>
+            我的技能 <span className="cf-count">{skills.length}</span>
+          </h2>
+          <button
+            className="cf-primary cf-catalog-create"
+            disabled={busy}
+            onClick={() => {
+              reset();
+              setNotice("");
+            }}
+          >
             ＋ 新 Skill
           </button>
-          {!skills.length && <p>尚无自定义 Skill</p>}
-          {skills.map((row) => (
-            <button
-              key={row.id}
-              disabled={busy}
-              aria-pressed={selected?.id === row.id}
-              onClick={() => void open(row)}
-            >
-              <strong>{row.name}</strong>
-              <small>
-                v{row.number} · {row.enabled ? "已启用" : "已停用"}
-              </small>
-              <small>{row.description}</small>
-            </button>
-          ))}
-        </div>
+          <input
+            className="cf-search"
+            aria-label="搜索技能"
+            placeholder="搜索技能…"
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+          />
+          <div className="cf-items">
+            {skills
+              .filter((row) =>
+                `${row.name} ${row.description}`
+                  .toLowerCase()
+                  .includes(search.trim().toLowerCase()),
+              )
+              .map((row) => (
+                <div
+                  className="cf-entry"
+                  key={row.id}
+                  data-selected={selected?.id === row.id}
+                >
+                  <button
+                    className="cf-select"
+                    disabled={busy}
+                    aria-pressed={selected?.id === row.id}
+                    onClick={() => void open(row)}
+                  >
+                    <span className="cf-avatar purple" aria-hidden="true">
+                      ▤
+                    </span>
+                    <span>
+                      <strong>{row.name}</strong>
+                      <small>{row.description}</small>
+                      <small>
+                        v{row.number} · {row.enabled ? "已启用" : "已停用"}
+                      </small>
+                    </span>
+                  </button>
+                </div>
+              ))}
+          </div>
+          {!skills.length && (
+            <p className="cf-empty">还没有技能，从一个常用流程开始。</p>
+          )}
+          {!!skills.length &&
+            !skills.some((row) =>
+              `${row.name} ${row.description}`
+                .toLowerCase()
+                .includes(search.trim().toLowerCase()),
+            ) && <p className="cf-empty">没有匹配的技能。</p>}
+        </aside>
         <form
-          className="account-settings agent-form skill-form"
+          id="skill-config-form"
+          className="cf-editor"
           onSubmit={(event) => {
             event.preventDefault();
-            void save();
+            if (!busy && canManage) void save();
           }}
         >
-          <fieldset disabled={busy || !canManage}>
-            <label>
-              Skill 名称
-              <input
-                required
-                maxLength={64}
-                pattern="[a-z0-9]+(-[a-z0-9]+)*"
-                placeholder="例如 weekly-report"
-                value={name}
-                onChange={(event) => setName(event.target.value)}
-              />
-            </label>
-            <p className="field-hint">
-              使用小写英文、数字和连字符；描述和流程支持中文。
+          <fieldset disabled={busy || !canManage} className="cf-stack">
+            <section className="cf-card">
+              <h2>基本信息</h2>
+              <label>
+                Skill 名称
+                <input
+                  required
+                  maxLength={64}
+                  pattern="[a-z0-9]+(-[a-z0-9]+)*"
+                  placeholder="例如 weekly-report"
+                  value={name}
+                  onChange={(event) => setName(event.target.value)}
+                />
+              </label>
+              <p className="cf-help">
+                小写英文、数字和连字符；描述和流程支持中文。
+              </p>
+              <label>
+                技能描述
+                <input
+                  required
+                  maxLength={500}
+                  value={description}
+                  onChange={(event) => setDescription(event.target.value)}
+                />
+              </label>
+            </section>
+            <section className="cf-card">
+              <div className="cf-card-title">
+                <h2>工作流程</h2>
+                <span className="cf-tag">支持 Markdown</span>
+              </div>
+              <label>
+                <span className="sr-only">技能流程（Markdown）</span>
+                <textarea
+                  aria-label="技能流程（Markdown）"
+                  className="cf-workflow"
+                  required
+                  maxLength={6000}
+                  rows={12}
+                  value={instructions}
+                  onChange={(event) => setInstructions(event.target.value)}
+                />
+              </label>
+              <div className="cf-editor-foot">
+                <small>技能说明会随版本保存，请勿填写密钥。</small>
+                <small>{instructions.length} / 6000</small>
+              </div>
+            </section>
+            <details className="cf-card cf-tool-range" ref={toolSection}>
+              <summary>
+                工具范围 <small>{tools.length} 项已授权</small>
+              </summary>
+              <p className="cf-help">
+                实际可用工具仍受助手授权限制；不勾选表示禁用业务工具。
+              </p>
+              <div className="cf-tool-options">
+                <ToolChoices
+                  accountId={account.id}
+                  value={tools}
+                  onChange={setTools}
+                  onCatalog={setCatalog}
+                />
+              </div>
+            </details>
+          </fieldset>
+          {!canManage && (
+            <p className="cf-help">
+              你可以使用该技能；编辑权限属于创建者与空间管理员。
             </p>
-            <label>
-              技能描述
-              <input
-                required
-                maxLength={500}
-                value={description}
-                onChange={(event) => setDescription(event.target.value)}
-              />
-            </label>
-            <label>
-              技能流程（Markdown）
-              <textarea
-                aria-label="技能流程（Markdown）"
-                required
-                maxLength={6000}
-                rows={12}
-                value={instructions}
-                onChange={(event) => setInstructions(event.target.value)}
-              />
-            </label>
-            <p className="field-hint">
-              {instructions.length} / 6000
-              字。填写流程与输出要求，请勿保存密钥。
+          )}
+        </form>
+        <aside className="cf-summary-rail">
+          <section className="cf-card">
+            <h2>技能摘要</h2>
+            <div className="cf-identity">
+              <span className="cf-avatar purple" aria-hidden="true">
+                ▤
+              </span>
+              <strong>{name || "未命名技能"}</strong>
+              <span
+                className="cf-status"
+                data-enabled={selected?.enabled ?? enabled}
+              >
+                {selected ? (selected.enabled ? "已启用" : "已停用") : "未发布"}
+              </span>
+            </div>
+            <dl className="cf-summary">
+              <div>
+                <dt>当前版本</dt>
+                <dd>{selected ? `v${selected.number}` : "未发布"}</dd>
+              </div>
+              <div>
+                <dt>工具范围</dt>
+                <dd>{tools.length} 项</dd>
+              </div>
+              <div>
+                <dt>使用范围</dt>
+                <dd>当前工作空间</dd>
+              </div>
+            </dl>
+            <div className="cf-divider">
+              <h3>允许使用的工具</h3>
+              <div className="cf-chips">
+                {tools.length ? (
+                  tools.map((tool) => (
+                    <span key={tool}>
+                      {catalog.find((item) => item.name === tool)?.title ||
+                        tool}
+                    </span>
+                  ))
+                ) : (
+                  <small>未授权业务工具</small>
+                )}
+              </div>
+              <p className="cf-help">实际可用工具仍受助手授权限制。</p>
+              <button
+                className="cf-link"
+                onClick={() => {
+                  if (toolSection.current) {
+                    toolSection.current.open = true;
+                    toolSection.current.scrollIntoView({
+                      behavior: "smooth",
+                      block: "center",
+                    });
+                  }
+                }}
+              >
+                管理工具范围 →
+              </button>
+            </div>
+          </section>
+          <section className="cf-card">
+            <h2>发布更新</h2>
+            <p className="cf-help">
+              发布后生成新版本，已有任务继续使用原版本。
             </p>
-            <fieldset>
-              <legend>可使用的只读工具</legend>
-              <ToolChoices
-                accountId={account.id}
-                value={tools}
-                onChange={setTools}
-              />{" "}
-            </fieldset>
-            <label className="tool-checkbox">
+            <button
+              className="cf-primary cf-wide"
+              form="skill-config-form"
+              disabled={busy || !canManage}
+            >
+              {busy ? "发布中…" : selected ? "发布新版本" : "创建 Skill"}
+            </button>
+            <label className="cf-switch-row">
+              发布后启用
               <input
                 type="checkbox"
+                role="switch"
                 checked={enabled}
+                disabled={busy || !canManage}
                 onChange={(event) => setEnabled(event.target.checked)}
               />
-              发布后启用
+              <span className="cf-switch-track" aria-hidden="true" />
             </label>
-          </fieldset>
-          <p className="field-hint">
-            工具必须同时被 Agent 授权；不勾选表示禁用业务工具。Skill
-            不执行自定义脚本，也不能绕过知识库的证据要求。
-          </p>
-          {!canManage && (
-            <p>你可以使用该技能；编辑权限属于创建者与空间管理员。</p>
-          )}
-          {notice && <p role="status">{notice}</p>}
-          <div className="skill-actions">
-            <button disabled={busy || !canManage} type="submit">
-              {selected ? "发布新版本" : "创建 Skill"}
-            </button>
             {selected && canManage && (
-              <>
+              <div className="cf-direct-actions">
                 <button
+                  className="cf-link"
                   disabled={busy}
-                  type="button"
                   onClick={() => void changeState()}
                 >
-                  {selected.enabled ? "停用 Skill" : "启用 Skill"}
+                  {selected.enabled ? "立即停用 Skill" : "立即启用 Skill"}
                 </button>
                 <button
+                  className="cf-secondary cf-danger"
                   disabled={busy}
-                  type="button"
                   onClick={() => void changeState(true)}
                 >
                   删除 Skill
                 </button>
-              </>
+              </div>
             )}
-          </div>
-        </form>
+          </section>
+        </aside>
       </div>
     </section>
   );

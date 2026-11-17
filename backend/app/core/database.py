@@ -5,6 +5,7 @@ from sqlalchemy import Engine, create_engine
 # API、Worker、Scheduler 共用此入口，独立进程也须加载完整实体才能解析外键。
 from app.core import model_registry  # noqa: F401
 from app.core.config import Settings
+from app.tasks.notifications import register_publisher
 
 
 def create_database(settings: Settings) -> Engine:
@@ -14,4 +15,13 @@ def create_database(settings: Settings) -> Engine:
         .replace("postgresql://", "postgresql+psycopg://", 1)
         .replace("postgres://", "postgresql+psycopg://", 1)
     )
-    return create_engine(url, pool_pre_ping=True, connect_args={"connect_timeout": 5})
+    engine = create_engine(
+        url,
+        pool_pre_ping=True,
+        pool_size=settings.database_pool_size,
+        max_overflow=settings.database_max_overflow,
+        pool_timeout=settings.database_pool_timeout_seconds,
+        connect_args={"connect_timeout": 5},
+    )
+    register_publisher(engine, settings)
+    return engine

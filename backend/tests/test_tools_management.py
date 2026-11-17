@@ -10,23 +10,24 @@ from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
 
 import pytest
+from pydantic import ValidationError
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
+from test_agents import setup_task
+from test_identity import ORIGIN, login
+
 from app.core.config import Settings
 from app.providers.client import HTTPProvider, ModelEvent, ProviderFailure, Reply, ToolCall
 from app.tasks.execution import Execution
 from app.tasks.ledger_models import ToolExecution
 from app.tasks.models import Run
 from app.tasks.reliability import execute_bound_tool
-from app.tools import http_runtime
-from app.tools.default_http import default_config
-from app.tools.http_runtime import execute_http, resolve_public, validate_arguments
-from app.tools.management_contracts import ToolInput, public_endpoint
+from app.tools.http import runtime as http_runtime
+from app.tools.http.contracts import ToolInput, public_endpoint
+from app.tools.http.defaults import default_config
+from app.tools.http.runtime import execute_http, resolve_public, validate_arguments
 from app.tools.models import ManagedTool, ToolVersion
 from app.tools.service import bound_tool, freeze_tools
-from pydantic import ValidationError
-from sqlalchemy import func, select
-from sqlalchemy.orm import Session
-from test_agents import setup_task
-from test_identity import ORIGIN, login
 
 pytest_plugins = ["test_identity"]
 
@@ -57,7 +58,7 @@ def context(client: Any, email: str = "owner@example.test") -> tuple[str, str, d
 
 
 def test_catalog_and_crud(client: Any) -> None:
-    """默认五项仅读取不落库，管理员 CRUD 追加版本且删除后立即隐藏。"""
+    """内置目录仅读取不落库，管理员 CRUD 追加版本且删除后立即隐藏。"""
     space, _, headers = context(client)
     path = f"/api/v1/me/tools"
     items = client.get(path).json()["items"]
@@ -67,6 +68,10 @@ def test_catalog_and_crud(client: Any) -> None:
         "weather_query",
         "traffic_query",
         "web_search",
+        "read_files",
+        "create_zip",
+        "fetch_picture",
+        "download_torrent",
     }
     assert all(item["builtin"] for item in items)
     assert all(not item["ready"] for item in items if item["kind"] == "http")

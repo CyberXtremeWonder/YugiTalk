@@ -44,7 +44,7 @@
 | 发布回滚 | 升级和回滚复验通过，实际镜像ID往返切换且健康；首轮失败后自动恢复并修复镜像保留。[升级](./artifacts/stage6-release.json)、[回滚](./artifacts/stage6-rollback.json) |
 | S3接入边界 | 正式默认服务不包含本机storage，运行服务无其依赖，CA只读挂载；两桶读写删除通过，均明确是本地替身。[配置](./artifacts/stage6-s3-compose.json)、[协议](./artifacts/stage6-s3-preflight.json) |
 | 全部镜像复扫 | API/Worker 0严重44高危；嵌入0/48、etcd0/12、前端0/0、Jaeger0/4、Milvus2/59、PostgreSQL4/89、Prometheus0/10、Redis0/2。仍阻止上线。旧MinIO测试替身9/130，默认正式部署不启用；原始记录全部保留。[完整报告](./artifacts/stage6-all-images-audit.json) |
-| 候选安全评估 | 官方Milvus 2.6.23为0严重92高危，2.6.24为0严重15高危；均未部署、未迁移数据，不能据此标记安全通过。[处置说明](../SECURITY_REVIEW.md)、[候选报告](./artifacts/stage6-candidate-images-audit.json) |
+| 候选安全评估 | 官方Milvus 2.6.23为0严重92高危，2.6.24为0严重15高危；均未部署、未迁移数据，不能据此标记安全通过。[处置说明](../archive/SECURITY_REVIEW.md)、[候选报告](./artifacts/stage6-candidate-images-audit.json) |
 | 30分钟混合负载 | 本轮1800.031秒、7200操作、错误0；聊天首内容P95=0.64秒、普通查询P95=0.141秒，均达到本地Mock目标。内存/持久一致性通过，采样队列最大0，预算全部释放，配置已恢复；API2 CPU、Worker8进程/2 CPU，运行镜像在报告内。[完整报告](./artifacts/stage6-soak.json) |
 | 检索评测 | 100份中文合成资料、1000标注问题，真实BGE-M3/Milvus Recall@5=100%；不等于生成答案正确率或真实业务泛化结果。[报告](./artifacts/stage6-corpus-retrieval.json) |
 | 生成质量基线 | 六类60项版本化用例与人工rubric已保存，真实模型尚未运行，付费调用0，无质量分。[资料说明](../evaluation/README.md) |
@@ -72,7 +72,7 @@
 2. 刷新页面确认登录保留；在知识库查看本轮功能测试资料，检索“验收口令是什么？”，确认来源命中“紫色星河”。这验证真实BGE/Milvus检索，不能用来证明外部S3已接通。
 3. 在对话页发送消息，观察分段显示与简洁处理流程，并检查停止按钮。隔离环境使用明确标记的模型协议替身，不代表真实DeepSeek模型答案质量。
 4. 查看本报告链接的原始压测和冷备报告，分别核对持续时间、并发、实际镜像与容量、错误数、业务指纹和配置恢复。短测不得作为完整30分钟验收。
-5. 查看[安全处置记录](../SECURITY_REVIEW.md)及全部镜像报告。严重/高危记录尚未完成处置时，保持阶段6未通过；外部S3和服务器条件补齐后再进行对应正式验收。
+5. 查看[安全处置记录](../archive/SECURITY_REVIEW.md)及全部镜像报告。严重/高危记录尚未完成处置时，保持阶段6未通过；外部S3和服务器条件补齐后再进行对应正式验收。
 
 ## 可复现命令
 

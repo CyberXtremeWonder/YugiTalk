@@ -12,11 +12,13 @@ from sqlalchemy.orm import Session
 from app.accounts.access import membership
 from app.core.config import Settings
 from app.providers.client import ProviderFailure
-from app.tools.default_http import DEFAULT_HTTP_NAMES, default_config
-from app.tools.management_contracts import ToolInput
+from app.tools.http.contracts import ToolInput
+from app.tools.http.defaults import DEFAULT_HTTP_NAMES, default_config
+from app.tools.http.search import search_config
+from app.tools.http.torrent import TOOL_NAME as TORRENT_TOOL
+from app.tools.http.torrent import configuration_note as torrent_configuration_note
 from app.tools.models import ManagedTool, ToolVersion
 from app.tools.registry import TOOL_SCHEMAS
-from app.tools.web_search import search_config
 
 TITLES = {
     "web_search": "网页搜索",
@@ -24,6 +26,10 @@ TITLES = {
     "format_report": "报告排版",
     "weather_query": "天气查询",
     "traffic_query": "路况查询",
+    "read_files": "读取文件文本",
+    "create_zip": "生成压缩包",
+    "fetch_picture": "抓取图片",
+    "download_torrent": "种子下载",
 }
 
 
@@ -130,6 +136,10 @@ def descriptor(db: Session, workspace: str, name: str) -> dict[str, Any] | None:
     if row is None or row.builtin:
         return None
     version = latest(db, row)
+    if version.config.get("kind") == "mcp":
+        from app.tools.mcp.service import entry
+
+        return entry(db, row, version)
     return {
         "name": name,
         "title": version.config["title"],
@@ -176,6 +186,8 @@ def freeze_tools(
                 continue
             if item["kind"] == "http" and readiness(item["config"], settings):
                 continue
+            if name == TORRENT_TOOL and torrent_configuration_note(settings):
+                continue
             pins[name] = item
     return pins
 
@@ -202,7 +214,13 @@ def bound_tool(
     pin = pins.get(name) if isinstance(pins, dict) else None
     if isinstance(pins, dict) and not isinstance(pin, dict):
         raise ProviderFailure("tool_not_authorized")
+    if isinstance(pin, dict) and pin.get("kind") == "mcp":
+        from app.tools.mcp.service import bound
+
+        return bound(db, user, pin, name)
     if name in TOOL_SCHEMAS:
+        if name == TORRENT_TOOL and (settings is None or torrent_configuration_note(settings)):
+            raise ProviderFailure("tool_not_configured")
         item = descriptor(db, workspace, name)
         assert item is not None
         if pin is not None and (

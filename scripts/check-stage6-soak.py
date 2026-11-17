@@ -445,7 +445,7 @@ def main() -> None:
     check = runpy.run_path(str(ROOT / "scripts/check-stage6-production.py"))
     runner, original = check["run"], check["compose"]()
     # 插入额外文件，不能修改私有环境文件，更不能污染开发默认Compose。
-    arguments = [*original, "-f", str(ROOT / "docker-compose.stage6-soak.yml")]
+    arguments = [*original, "-f", str(ROOT / "deploy/tests/docker-compose.stage6-soak.yml")]
     values = {
         key: str(value)
         for key, value in dotenv_values(

@@ -40,7 +40,7 @@ try {
     }
 
     if ($IncludeUI) {
-        # 浏览器测试需先启动 README 中的静态预览服务，并安装 Edge。
+        # 历史草图位于 docs/archive/ui；需先准备 4170 本机静态预览服务，并安装 Edge。
         Push-Location 'frontend'
         try {
             Invoke-Checked 'npx.cmd' @('playwright', 'test', '--config', 'playwright.stage0.config.ts')

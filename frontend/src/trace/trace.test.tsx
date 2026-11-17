@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { tokenLabel, timing } from "./TraceView";
+import { durationLabel, tokenLabel, timing } from "./TraceView";
 import { fetchTrace, fetchTraces, type TraceStep } from "./api";
 
 afterEach(() => {
@@ -11,6 +11,13 @@ test("真实用量缺失显示未知，零用量仍显示零", () => {
   expect(tokenLabel(null)).toBe("未知");
   expect(tokenLabel(0)).toBe("0");
   expect(tokenLabel(12000)).toBe("12,000");
+});
+
+test("耗时区分尚未收到和立即返回", () => {
+  expect(durationLabel(null)).toBe("未知");
+  expect(durationLabel(undefined)).toBe("未知");
+  expect(durationLabel(0)).toBe("0.00s");
+  expect(durationLabel(1250)).toBe("1.25s");
 });
 
 test("耗时条反映相对起点和持续时间", () => {

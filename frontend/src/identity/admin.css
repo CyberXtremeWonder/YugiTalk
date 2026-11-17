@@ -1,0 +1,744 @@
+.secondary-view.admin-panel {
+  width: 100%;
+  margin: 0;
+  padding: 30px 32px;
+  border: 0;
+  border-radius: 0;
+  background: color-mix(in srgb, var(--canvas) 65%, var(--bg));
+}
+.admin-panel .admin-container {
+  max-width: 1440px;
+  margin: 0 auto;
+}
+.admin-panel .admin-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 20px;
+  margin-bottom: 26px;
+}
+.admin-panel .admin-eyebrow {
+  margin-bottom: 8px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.admin-panel .admin-heading h1 {
+  margin: 0;
+  font-size: 28px;
+}
+.admin-panel .admin-heading p {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+.admin-panel .admin-mode {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex-shrink: 0;
+  padding: 6px 11px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.admin-panel .admin-mode > span {
+  height: 6px;
+  width: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.admin-panel .admin-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 18px;
+  margin-bottom: 22px;
+}
+.admin-panel .admin-stat,
+.admin-panel .admin-card,
+.admin-panel .admin-review {
+  min-width: 0;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: 0 3px 12px #1d376003;
+}
+.admin-panel .admin-stat {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 22px;
+}
+.admin-panel .admin-stat-icon {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  flex-shrink: 0;
+  border-radius: 11px;
+  color: var(--accent);
+  background: var(--active);
+}
+.admin-panel .admin-stat-icon.violet {
+  color: #8b71d2;
+  background: color-mix(in srgb, #8b71d2 10%, var(--surface));
+}
+.admin-panel .admin-stat-icon.mint {
+  color: #309c8d;
+  background: color-mix(in srgb, #309c8d 10%, var(--surface));
+}
+.admin-panel .admin-stat-icon svg {
+  width: 22px;
+  height: 22px;
+}
+.admin-panel .admin-stat p {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 0 0 4px;
+}
+.admin-panel .admin-stat strong {
+  display: block;
+  font-size: 28px;
+  font-weight: 650;
+  line-height: 1.3;
+  letter-spacing: -0.8px;
+}
+.admin-panel .admin-stat .admin-stat-word {
+  font-size: 23px;
+  line-height: 1.6;
+  letter-spacing: 0;
+}
+.admin-panel .admin-stat small {
+  display: block;
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.admin-panel .admin-stat > .admin-badge {
+  margin-left: auto;
+}
+.admin-panel .admin-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+  padding: 3px 8px;
+  border-radius: 5px;
+  font-size: 10px;
+  font-weight: 500;
+}
+.admin-panel .admin-badge.good {
+  color: #25866a;
+  background: color-mix(in srgb, #309c8d 9%, var(--surface));
+}
+.admin-panel .admin-badge.warn {
+  color: #ac7225;
+  background: color-mix(in srgb, #ca9135 12%, var(--surface));
+}
+.admin-panel .admin-badge.neutral {
+  color: var(--muted);
+  background: var(--canvas);
+}
+.admin-panel .admin-badge i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.admin-panel .admin-section-heading,
+.admin-panel .admin-review > header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+.admin-panel .admin-section-heading h2,
+.admin-panel .admin-review > header h2 {
+  font-size: 15px;
+  font-weight: 650;
+  margin: 0;
+}
+.admin-panel .admin-section-heading p,
+.admin-panel .admin-review > header p {
+  color: var(--muted);
+  font-size: 11px;
+  margin: 4px 0 0;
+}
+.admin-panel .admin-environment,
+.admin-panel .admin-count,
+.admin-panel .admin-section-heading h2 > span {
+  display: inline-block;
+  background: var(--canvas);
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 400;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 2px 7px;
+}
+.admin-panel .admin-section-heading h2 > span {
+  margin-left: 5px;
+}
+.admin-panel .admin-services {
+  padding: 22px;
+  margin-bottom: 22px;
+}
+.admin-panel .admin-service-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+.admin-panel .admin-service {
+  display: block;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px;
+  min-width: 0;
+}
+.admin-panel .admin-service-top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.admin-panel .admin-service > p {
+  font-size: 10px;
+  color: var(--muted);
+  margin: 12px 0;
+}
+.admin-panel .admin-service > small {
+  display: block;
+  font-size: 10px;
+  color: var(--muted);
+  line-height: 1.7;
+  margin-top: 8px;
+  overflow-wrap: anywhere;
+}
+.admin-panel .admin-service-latency {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 10px;
+  color: var(--muted);
+}
+.admin-panel .admin-service-latency strong {
+  font-size: 15px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.admin-panel .admin-health-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.admin-panel .admin-health-actions button {
+  padding: 6px 10px;
+  font-size: 11px;
+  border-radius: 7px;
+  color: var(--accent);
+}
+.admin-panel .admin-health-updated {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: -4px 0 16px;
+  color: var(--muted);
+  font-size: 10px;
+}
+.admin-panel .admin-health-updated.stale {
+  color: #ac7225;
+}
+.admin-panel .admin-health-note {
+  font-size: 10px;
+  color: var(--muted);
+  margin: 10px 0 0;
+}
+.admin-panel .admin-service strong {
+  font-size: 12px;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+.admin-panel .admin-service .admin-badge {
+  margin-left: auto;
+}
+.admin-panel .admin-service-mark {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  border-radius: 7px;
+  background: var(--canvas);
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 600;
+}
+.admin-panel .admin-models {
+  display: flex;
+  gap: 40px;
+  margin: 18px 0 0;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+.admin-panel .admin-models > div {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+.admin-panel .admin-models dt {
+  font-size: 11px;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+.admin-panel .admin-models dd {
+  font-size: 12px;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.admin-panel .admin-models dd > span {
+  color: var(--muted);
+  font-size: 10px;
+  margin-left: 8px;
+}
+.admin-panel .admin-main-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.65fr) minmax(300px, 1fr);
+  gap: 22px;
+  align-items: start;
+}
+.admin-panel .admin-users,
+.admin-panel .admin-audit,
+.admin-panel .admin-review {
+  padding: 22px;
+}
+.admin-panel .admin-side {
+  min-width: 0;
+  display: grid;
+  gap: 22px;
+}
+.admin-panel .admin-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0 11px;
+  color: var(--muted);
+  background: var(--canvas);
+  margin-bottom: 16px;
+}
+.admin-panel .admin-search svg {
+  flex-shrink: 0;
+}
+.admin-panel .admin-search input {
+  background: transparent;
+  border: 0;
+  padding: 9px 0;
+  font-size: 12px;
+  border-radius: 0;
+}
+.admin-panel .admin-search:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.admin-panel .admin-user-table table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  text-align: left;
+}
+.admin-panel .admin-user-table th {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 500;
+  background: var(--canvas);
+  padding: 10px 8px;
+  white-space: nowrap;
+}
+.admin-panel .admin-user-table th:first-child {
+  border-radius: 6px 0 0 6px;
+}
+.admin-panel .admin-user-table th:last-child {
+  border-radius: 0 6px 6px 0;
+  text-align: right;
+}
+.admin-panel .admin-user-table td {
+  border-bottom: 1px solid var(--line);
+  padding: 16px 8px;
+  vertical-align: middle;
+}
+.admin-panel .admin-user-table td:last-child {
+  text-align: right;
+}
+.admin-panel .admin-user-identity {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.admin-panel .admin-avatar {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
+  background: var(--canvas);
+  border: 1px solid var(--line);
+  border-radius: 50%;
+}
+.admin-panel .admin-avatar.is-admin {
+  color: var(--accent);
+  background: var(--active);
+  border-color: transparent;
+}
+.admin-panel .admin-user-identity > div {
+  min-width: 0;
+}
+.admin-panel .admin-user-identity strong {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.admin-panel .admin-user-identity > div > span {
+  display: block;
+  color: var(--muted);
+  font-size: 10px;
+  margin-top: 3px;
+  overflow-wrap: anywhere;
+}
+.admin-panel .admin-role {
+  font-size: 10px;
+  white-space: nowrap;
+  color: var(--muted);
+}
+.admin-panel .admin-role.is-admin {
+  color: var(--accent);
+}
+.admin-panel .admin-user-table button {
+  font-size: 11px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  white-space: nowrap;
+}
+.admin-panel .admin-user-table .admin-disable:not(:disabled) {
+  color: #bd6670;
+  border-color: color-mix(in srgb, #bd6670 25%, var(--surface));
+}
+.admin-panel .admin-user-table .admin-enable {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 25%, var(--surface));
+}
+.admin-panel .admin-users-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding-top: 16px;
+}
+.admin-panel .admin-users-footer > span {
+  color: var(--muted);
+  font-size: 10px;
+}
+.admin-panel .admin-users-footer button {
+  font-size: 11px;
+  padding: 6px 10px;
+  border-radius: 7px;
+}
+.admin-panel .admin-audit-list {
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+.admin-panel .admin-audit-list li {
+  position: relative;
+  display: flex;
+  gap: 12px;
+  padding-bottom: 18px;
+}
+.admin-panel .admin-audit-list li:not(:last-child)::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 14px;
+  bottom: 0;
+  width: 1px;
+  background: var(--line);
+}
+.admin-panel .admin-audit-dot {
+  width: 9px;
+  height: 9px;
+  margin-top: 5px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--active);
+  border: 2px solid var(--accent);
+}
+.admin-panel .admin-audit-list strong {
+  display: block;
+  font-size: 11px;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+.admin-panel .admin-audit-list time {
+  display: block;
+  font-size: 10px;
+  color: var(--muted);
+  margin-top: 3px;
+}
+.admin-panel .admin-audit-list li:last-child {
+  padding-bottom: 0;
+}
+.admin-panel .admin-empty,
+.admin-panel .admin-review-empty {
+  text-align: center;
+  padding: 30px 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.admin-panel .admin-review-empty svg {
+  width: 32px;
+  height: 32px;
+  color: #76a999;
+}
+.admin-panel .admin-review-empty p {
+  margin: 8px 0 0;
+}
+.admin-panel .admin-review-empty strong {
+  display: block;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text);
+}
+.admin-panel .admin-review-empty span,
+.admin-panel .admin-review-empty small {
+  display: block;
+  font-size: 11px;
+  margin-top: 5px;
+}
+.admin-panel .admin-review-card {
+  padding: 16px 0;
+  border-top: 1px solid var(--line);
+  min-width: 0;
+}
+.admin-panel .admin-review-card h3 {
+  font-size: 13px;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.admin-panel .admin-review-card-heading {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.admin-panel .admin-review-card code {
+  font-size: 10px;
+  color: var(--muted);
+  padding: 2px 5px;
+  background: var(--canvas);
+  border-radius: 4px;
+  overflow-wrap: anywhere;
+}
+.admin-panel .admin-review-card p {
+  font-size: 12px;
+  margin: 8px 0;
+  overflow-wrap: anywhere;
+}
+.admin-panel .admin-review-meta {
+  color: var(--muted);
+  font-size: 10px;
+}
+.admin-panel .admin-review-meta > div {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 4px 0;
+}
+.admin-panel .admin-review-meta dt {
+  flex-shrink: 0;
+}
+.admin-panel .admin-review-meta dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.admin-panel .admin-review-count {
+  color: var(--muted);
+  font-size: 10px;
+  white-space: nowrap;
+}
+.admin-panel .admin-review-card details {
+  font-size: 11px;
+  color: var(--muted);
+  margin: 12px 0;
+}
+.admin-panel .admin-review-card summary {
+  cursor: pointer;
+  color: var(--accent);
+}
+.admin-panel .admin-review-card pre {
+  background: var(--canvas);
+  padding: 12px;
+  border-radius: 6px;
+  font-size: 11px;
+}
+.admin-panel .admin-review-card label {
+  font-size: 11px;
+}
+.admin-panel .admin-review-card textarea {
+  width: 100%;
+  min-height: 70px;
+  resize: vertical;
+  padding: 8px 10px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  font-size: 12px;
+}
+.admin-panel .admin-review-card .skill-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+.admin-panel .admin-review-card button {
+  font-size: 11px;
+  padding: 6px 14px;
+  border-radius: 6px;
+}
+.admin-panel .admin-review-card .skill-actions button:first-child {
+  background: var(--accent);
+  color: var(--accent-ink);
+  border-color: var(--accent);
+}
+.admin-panel .admin-review > button {
+  font-size: 11px;
+  margin-top: 12px;
+}
+.admin-panel [role="alert"] {
+  color: var(--import-error);
+  background: color-mix(in srgb, var(--import-error) 6%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--import-error) 20%, var(--line));
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.admin-panel [role="status"] {
+  color: var(--muted);
+  font-size: 12px;
+}
+.admin-panel .admin-footnote {
+  font-size: 10px;
+  color: var(--muted);
+  text-align: center;
+  margin: 20px 0 0;
+}
+[data-theme="dark"] .admin-panel .admin-badge.good {
+  color: #83cbb3;
+}
+[data-theme="dark"] .admin-panel .admin-badge.warn {
+  color: #deb76f;
+}
+@media (max-width: 1200px) {
+  .admin-panel .admin-stat {
+    padding: 18px;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .admin-panel .admin-main-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .admin-panel .admin-side {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: start;
+  }
+  .admin-panel .admin-service-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 700px) {
+  .secondary-view.admin-panel {
+    padding: 22px 16px;
+  }
+  .admin-panel .admin-heading {
+    align-items: flex-start;
+  }
+  .admin-panel .admin-heading h1 {
+    font-size: 24px;
+  }
+  .admin-panel .admin-mode {
+    font-size: 10px;
+    padding: 4px 7px;
+  }
+  .admin-panel .admin-summary {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+    margin-bottom: 16px;
+  }
+  .admin-panel .admin-stat {
+    align-items: center;
+    flex-wrap: nowrap;
+    padding: 16px;
+  }
+  .admin-panel .admin-stat strong {
+    font-size: 24px;
+  }
+  .admin-panel .admin-stat .admin-stat-word {
+    font-size: 21px;
+  }
+  .admin-panel .admin-side {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 16px;
+  }
+  .admin-panel .admin-services,
+  .admin-panel .admin-users,
+  .admin-panel .admin-audit,
+  .admin-panel .admin-review {
+    padding: 16px;
+  }
+  .admin-panel .admin-service-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+  }
+  .admin-panel .admin-services {
+    margin-bottom: 16px;
+  }
+  .admin-panel .admin-models {
+    flex-direction: column;
+    gap: 10px;
+  }
+  .admin-panel .admin-models dd > span {
+    display: block;
+    margin: 2px 0 0;
+  }
+  .admin-panel .admin-user-table table {
+    table-layout: fixed;
+  }
+  .admin-panel .admin-user-table th:first-child {
+    width: 48%;
+  }
+  .admin-panel .admin-user-table th,
+  .admin-panel .admin-user-table td {
+    padding-left: 3px;
+    padding-right: 3px;
+  }
+  .admin-panel .admin-user-identity {
+    gap: 6px;
+  }
+  .admin-panel .admin-avatar {
+    display: none;
+  }
+  .admin-panel .admin-user-table button {
+    padding: 4px 6px;
+  }
+  .admin-panel .admin-badge {
+    padding: 3px 5px;
+  }
+}

@@ -1,6 +1,7 @@
 import { identityRequest } from "../identity/api";
 
 export interface TraceRun {
+  prompt_preview?: string | null;
   id: string;
   status: string;
   model: string;
@@ -34,6 +35,18 @@ export interface TraceDetail {
   run: TraceRun;
   steps: TraceStep[];
   sampled_at: string;
+  latency?: {
+    queue_ms: number | null;
+    first_text_ms: number | null;
+    total_ms: number | null;
+    elapsed_ms: number;
+    model_work_ms: number | null;
+    tool_work_ms: number | null;
+    model_retries: number;
+    model_corrections: number;
+    reasoning_tokens: number | null;
+    unknown_reasoning_calls: number;
+  };
   summary: {
     recorded: boolean;
     model_calls: number;

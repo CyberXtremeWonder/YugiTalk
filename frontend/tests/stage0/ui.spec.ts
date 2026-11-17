@@ -4,7 +4,7 @@ import AxeBuilder from "@axe-core/playwright";
 for (const width of [360, 768, 1440]) {
   test(`草图 ${width}px：布局、主题与可访问性`, async ({ page }) => {
     await page.setViewportSize({ width, height: 1000 });
-    await page.goto("/docs/ui/workbench.html");
+    await page.goto("/docs/archive/ui/workbench.html");
     await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
     await expect(
       page.getByRole("link", {
@@ -64,7 +64,7 @@ for (const width of [360, 768, 1440]) {
 
 test("手机导航与键盘操作", async ({ page }) => {
   await page.setViewportSize({ width: 360, height: 900 });
-  await page.goto("/docs/ui/workbench.html");
+  await page.goto("/docs/archive/ui/workbench.html");
   const menu = page.getByRole("button", { name: "导航", exact: true });
   await menu.focus();
   await page.keyboard.press("Enter");
@@ -78,7 +78,7 @@ test("手机导航与键盘操作", async ({ page }) => {
 
 test("窄屏任务抽屉的焦点、Escape 与视口切换", async ({ page }) => {
   await page.setViewportSize({ width: 768, height: 1000 });
-  await page.goto("/docs/ui/workbench.html");
+  await page.goto("/docs/archive/ui/workbench.html");
   const trigger = page.getByRole("button", { name: "展开详情" });
   await trigger.click();
   const dialog = page.getByRole("dialog", { name: "任务详情示例" });
@@ -108,7 +108,7 @@ test("窄屏任务抽屉的焦点、Escape 与视口切换", async ({ page }) =>
 
 test("左侧入口切换独立视图，新建对话与任务灵感", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 1000 });
-  await page.goto("/docs/ui/workbench.html");
+  await page.goto("/docs/archive/ui/workbench.html");
   for (const [name, title] of [
     ["Agent", "Agent"],
     ["知识库", "知识库"],
@@ -140,7 +140,7 @@ test("左侧入口切换独立视图，新建对话与任务灵感", async ({ pa
 
 test("减少动态效果设置", async ({ page }) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
-  await page.goto("/docs/ui/workbench.html");
+  await page.goto("/docs/archive/ui/workbench.html");
   const duration = await page
     .locator("#theme")
     .evaluate((button) => getComputedStyle(button).transitionDuration);

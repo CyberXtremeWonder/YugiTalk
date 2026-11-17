@@ -1,5 +1,15 @@
 # 测试计划与测量基线
 
+更新说明：2026 年 11 月 13 日。本文件下方按日期和阶段保留原测量记录，不代表当前全仓库测试数量；早期审批和组织空间测试属于历史设计。当前接口见 [API](API.md)，当前架构见 [ARCHITECTURE](ARCHITECTURE.md)。
+
+## 当前验证入口
+
+- 后端：在 backend 目录运行 `.venv/Scripts/python.exe -m pytest tests -q`。仅需要某个功能时选择对应测试文件，不把未选范围记为通过。
+- 前端：`npm --prefix frontend run test`、`typecheck`、`lint`、`build`；浏览器场景按对应 Playwright 配置运行。
+- HITL：`test_steering.py`、`test_run_controls.py`、`test_enhanced_rag.py` 及 `playwright.steering.config.ts`，完整结果与边界见 [HITL](HITL.md#14-验证结果和证据边界)。
+- 生产隔离验收：`scripts/test-stage6.ps1`，覆盖配置已移到 `deploy/tests/`。默认操作协议替身和专用数据，不应改成真实业务目标。
+- 文档整理只核对链接、当前路由与元数据，并回归受路径移动影响的脚本；不重新宣称真实模型、恢复演练或生产负载验收通过。
+
 ## 七步增强 RAG 补充验证
 
 登录密码长度调整（2026-10-11）独立回归通过：21 项身份测试，覆盖短密码、长密码、中文空格及初始化；HTTPS 浏览器验证超过旧上限的输入完整提交、错误凭证正常提示、正确凭证可登录。[后端报告](./stages/artifacts/password-length-tests.xml)、[浏览器报告](./stages/artifacts/password-length-ui.json)。

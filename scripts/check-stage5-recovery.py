@@ -144,7 +144,7 @@ def main() -> None:
         )
         checks.append("SIGKILL 真实 Worker，失效租约回收并从检查点恢复，答复仅保存一次")
         # 长文本的宕机重发保守额度较高；普通工具场景继续使用较小预算。
-        version = (
+        version = ( 
             client.post(
                 f"/agents/{agent['id']}/versions",
                 headers=headers,

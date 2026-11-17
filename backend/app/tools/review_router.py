@@ -14,7 +14,7 @@ from app.identity.contracts import InputModel
 from app.identity.dependencies import DB, Actor, Writer
 from app.identity.models import User
 from app.identity.router import development_admin
-from app.tools.management_contracts import ToolInput
+from app.tools.http.contracts import ToolInput
 from app.tools.models import ManagedTool, ToolSubmission
 from app.tools.registry import TOOL_SCHEMAS
 from app.tools.router import lock_workspace, publish

@@ -19,6 +19,7 @@ from app.rag.graph import (
     queue_graph,
     sweep_graph,
     validate_extraction,
+    verified_extraction,
 )
 from app.rag.graph_models import GraphBuild, GraphEntity, GraphFact, GraphPart
 from app.rag.indexing import cleanup_document, index_document, retrieve
@@ -81,6 +82,60 @@ def test_reject_unverifiable_facts(mutation):
         data.facts[0].quote = "使用DB1"
     with pytest.raises(ProviderFailure, match="graph_evidence_invalid"):
         validate_extraction("支付服务使用DB1。", data)
+    verified = verified_extraction("支付服务使用DB1。", data)
+    validate_extraction("支付服务使用DB1。", verified)
+    assert not verified.facts
+
+
+def test_graph_discards_bad_facts_and_remaps_verified_entities(client, storage, monkeypatch):
+    """真实故障回归：引文缺失端点只剔除该关系，有效关系仍完整发布。"""
+    _, headers, base_id = base(client)
+    key = upload(client, headers, base_id, "支付服务使用DB1。")
+    data = extraction().model_dump()
+    data["entities"].insert(0, {"name": "虚构实体", "kind": "system", "aliases": []})
+    data["facts"] = [
+        {"source": 1, "target": 2, "relation": "使用", "quote": "支付服务使用DB1。"},
+        {"source": 1, "target": 2, "relation": "使用", "quote": "使用DB1"},
+        {"source": 0, "target": 2, "relation": "使用", "quote": "支付服务使用DB1。"},
+    ]
+    build(client, monkeypatch, key, Extraction.model_validate(data))
+    result = client.get(f"/api/v1/documents/{key}/graph").json()
+    assert result["status"] == "ready"
+    assert len(result["facts"]) == 1
+    assert result["facts"][0]["source"] == "支付服务"
+    assert result["facts"][0]["target"] == "DB1"
+    with Session(client.app.state.database) as db:
+        assert {row.name for row in db.scalars(select(GraphEntity))} == {"支付服务", "DB1"}
+
+
+def test_graph_accepts_excess_candidates_but_keeps_published_limits():
+    """模型超出建议数量时仍解析候选，发布结果保持每块十二项的上限。"""
+    text = "".join(f"服务{number}使用DB1。" for number in range(15))
+    raw = {
+        "entities": [{"name": "DB1", "kind": "system"}] + [
+            {"name": f"服务{number}", "kind": "system"} for number in range(15)
+        ],
+        "facts": [
+            {"source": number + 1, "target": 0, "relation": "使用",
+             "quote": f"服务{number}使用DB1。"} for number in range(15)
+        ],
+    }
+    verified = verified_extraction(text, Extraction.model_validate(raw))
+    validate_extraction(text, verified)
+    assert len(verified.entities) == 12
+    assert len(verified.facts) == 11
+    repeated = extraction()
+    repeated.facts *= 15
+    assert len(verified_extraction("支付服务使用DB1。", repeated).facts) == 12
+
+
+def test_graph_accepts_single_character_names_with_original_evidence():
+    """游戏攻略中的单字属性名称与别名有原文依据时可参与关系。"""
+    data = extraction(source="火", target="队伍", relation="属于", quote="火属于队伍。")
+    data.entities[0].aliases = ["火"]
+    verified = verified_extraction("火属于队伍。", data)
+    assert len(verified.facts) == 1
+    validate_extraction("火属于队伍。", verified)
 
 
 def test_two_hop_sources_and_deletion(client, storage, monkeypatch):
@@ -115,12 +170,19 @@ def test_two_hop_sources_and_deletion(client, storage, monkeypatch):
 
 
 def test_failed_graph_keeps_rag_and_can_retry(client, storage, monkeypatch):
-    """无效抽取不发布半成品，普通索引可用且重试不增加文档版本。"""
+    """模型服务故障不影响普通索引，重试不增加文档版本。"""
     identity, headers, base_id = base(client)
     key = upload(client, headers, base_id, "支付服务使用DB1。")
-    invalid = extraction()
-    invalid.facts[0].quote = "编造原文"
-    build(client, monkeypatch, key, invalid)
+    async def fail(*args):
+        """模拟模型服务错误，不把请求失败当成空图谱发布。"""
+        raise ProviderFailure("model_authentication")
+
+    monkeypatch.setattr("app.rag.graph.StructuredModel.call", fail)
+    build_graph(
+        client.app.state.database,
+        client.app.state.settings.model_copy(update={"model_provider": "openai_compatible"}),
+        key, 1,
+    )
     engine, settings = client.app.state.database, client.app.state.settings
     with Session(engine) as db:
         assert db.get(Document, key).status == "ready"
@@ -136,6 +198,38 @@ def test_failed_graph_keeps_rag_and_can_retry(client, storage, monkeypatch):
     build(client, monkeypatch, key, extraction())
     with Session(engine) as db:
         assert len(list(db.scalars(select(GraphFact)))) == 1
+
+
+@pytest.mark.parametrize("code", ["model_transient", "model_timeout_or_network", "rag_deadline"])
+@pytest.mark.parametrize("recover", [True, False])
+def test_graph_retries_transient_failures_with_a_limit(client, storage, monkeypatch, code, recover):
+    """短暂故障延迟重投，恢复后可发布；连续失败三次后明确停止。"""
+    _, headers, base_id = base(client)
+    key = upload(client, headers, base_id, "支付服务使用DB1。")
+    engine = client.app.state.database
+    settings = client.app.state.settings.model_copy(update={"model_provider": "openai_compatible"})
+    calls, sent = [], []
+
+    async def call(*args):
+        """前两次模拟网络故障，可选第三次恢复。"""
+        calls.append(1)
+        if recover and len(calls) == 3:
+            return extraction()
+        raise ProviderFailure(code)
+
+    monkeypatch.setattr("app.rag.graph.StructuredModel.call", call)
+    monkeypatch.setattr("app.rag.graph.dispatch_graph", lambda *args: sent.append(args))
+    for attempt in range(3):
+        build_graph(engine, settings, key, 1)
+        with Session(engine) as db:
+            row = db.get(GraphBuild, key)
+            assert row.status == ("queued" if attempt < 2 else "ready" if recover else "failed")
+            assert row.attempts == attempt + 1
+            assert row.lease_until is None and row.token is None
+        if attempt < 2:
+            sweep_graph(engine, settings)
+            assert not sent
+    assert len(calls) == 3
 
 
 def test_cross_owner_base_version_and_csrf(client, storage, monkeypatch):
@@ -350,8 +444,8 @@ def test_graph_batches_survive_interruptions(client, storage, monkeypatch, inter
             db.commit()
     if interruption == "failure":
         async def fail(*args):
-            """模拟后续批次返回无法核验的关系。"""
-            return extraction(quote="原文中没有的关系")
+            """模拟后续批次的模型请求失败。"""
+            raise ProviderFailure("model_authentication")
 
         monkeypatch.setattr("app.rag.graph.StructuredModel.call", fail)
         build_graph(

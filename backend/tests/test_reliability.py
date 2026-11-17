@@ -57,6 +57,10 @@ def test_removed_ticket_tool_and_routes_are_unavailable(client):
         "traffic_query",
         "weather_query",
         "web_search",
+        "read_files",
+        "create_zip",
+        "fetch_picture",
+        "download_torrent",
     ]
     assert client.get(f"/api/v1/me/tickets").status_code == 404
     assert client.get(f"/api/v1/runs/{run['id']}/approvals").status_code == 404

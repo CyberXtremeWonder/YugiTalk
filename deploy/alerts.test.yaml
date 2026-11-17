@@ -1,0 +1,80 @@
+# 使用promtool test rules验证触发、阈值、持续时间和恢复；不连接业务服务。
+rule_files: [alerts.yaml]
+evaluation_interval: 1m
+tests:
+  - name: unavailable-and-backlog
+    interval: 1m
+    input_series:
+      - series: 'up{job="yugitalk-api"}'
+        values: 0+0x10
+      - series: yugitalk_queue_oldest_seconds
+        values: 301+0x10
+      - series: 'yugitalk_recent_runs{status="failed"}'
+        values: 5+0x10
+      - series: 'yugitalk_recent_runs{status="succeeded"}'
+        values: 10+0x10
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: YugiTalkQueueStalled
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: YugiTalkApiUnavailable
+        exp_alerts:
+          - exp_labels: {job: yugitalk-api, severity: critical}
+            exp_annotations: {summary: "API 指标抓取连续失败"}
+      - eval_time: 2m
+        alertname: YugiTalkQueueStalled
+        exp_alerts:
+          - exp_labels: {severity: warning}
+            exp_annotations: {summary: "最老排队任务等待超过五分钟且持续两分钟"}
+      - eval_time: 4m
+        alertname: YugiTalkTaskFailures
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: YugiTalkTaskFailures
+        exp_alerts:
+          - exp_labels: {severity: warning}
+            exp_annotations: {summary: "十五分钟窗口至少五个任务失败且失败率超过百分之二十"}
+  - name: below-thresholds
+    interval: 1m
+    input_series:
+      - series: yugitalk_queue_oldest_seconds
+        values: 300+0x10
+      - series: 'yugitalk_recent_runs{status="failed"}'
+        values: 4+0x10
+      - series: 'yugitalk_recent_runs{status="succeeded"}'
+        values: 0+0x10
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: YugiTalkQueueStalled
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: YugiTalkTaskFailures
+        exp_alerts: []
+  - name: failure-rate-boundary
+    interval: 1m
+    input_series:
+      - series: 'yugitalk_recent_runs{status="failed"}'
+        values: 5+0x10
+      - series: 'yugitalk_recent_runs{status="succeeded"}'
+        values: 20+0x10
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: YugiTalkTaskFailures
+        exp_alerts: []
+  - name: recovery
+    interval: 1m
+    input_series:
+      - series: yugitalk_queue_oldest_seconds
+        values: 600+0x3 0+0x6
+      - series: 'yugitalk_recent_runs{status="failed"}'
+        values: 5+0x5 0+0x4
+      - series: 'yugitalk_recent_runs{status="succeeded"}'
+        values: 0+0x10
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: YugiTalkQueueStalled
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: YugiTalkTaskFailures
+        exp_alerts: []

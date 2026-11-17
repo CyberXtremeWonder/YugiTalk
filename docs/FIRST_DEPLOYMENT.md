@@ -1,6 +1,6 @@
 # 首次部署操作步骤
 
-2026-10-12 用户决定暂不执行恢复演练，先准备部署文件。目前没有服务器信息，因此本轮没有连接服务器、购买资源或对外发布。首次部署入口不执行备份或恢复，也不把恢复能力标记为已验证；原有升级和备份工具的边界保持原样。
+更新日期：2026 年 11 月 13 日。本入口只适用于全新生产目标，不适用于已有开发环境更新或已有业务数据的升级。需要部署者准备实际主机、域名、证书、模型和 S3 服务信息，不会自动购买或推断这些资源。首次部署入口不执行备份或恢复演练，也不把恢复能力标记为已验证；原有升级和备份工具的边界保持原样。2026 年 10 月 12 日暂不执行恢复演练的记录只说明当时交付范围。
 
 ## 1. 部署位置与准备条件
 
@@ -74,7 +74,7 @@ backend/.venv/bin/python scripts/build-production-images.py
 docker compose --env-file .env.production -f docker-compose.yml -f docker-compose.prod.yml -p yugitalk-prod pull postgres redis etcd milvus prometheus jaeger
 ```
 
-默认构建包含嵌入镜像；使用远端嵌入时，可用两个 `--component` 仅构建 backend 和 frontend。基础镜像已固定摘要，所需镜像必须在启动前存在；入口不隐式构建或拉取。
+默认构建 backend、frontend、embedding 和 docling 四类镜像，Docling 标签为 `yugitalk-docling:0.1.0`，其余为 `0.2.0`。使用远端嵌入时，显式选择 `--component backend --component frontend --component docling`，跳过本地 embedding。基础镜像已固定摘要，所需镜像必须在启动前存在；入口不隐式构建或拉取。
 
 ## 5. 预检与首次启动
 

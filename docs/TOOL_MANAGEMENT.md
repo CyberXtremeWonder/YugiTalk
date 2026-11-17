@@ -62,7 +62,7 @@ TOOL_HTTP_ALLOWED_HOSTS=["restapi.amap.com","api.tavily.com"]
 
 搜索会把查询词发送到 Tavily，并可能消耗 Tavily 服务额度；默认测试只使用合成密钥与离线响应。Mock 不会假装执行真实网页搜索。选择知识库后仍遵守知识库证据约束，空检索会先拒答，不借网页搜索绕过该约束。
 
-代码在 `backend/app/tools/web_search.py`，网络执行沿用 `http_runtime.py`，专项回归在 `backend/tests/test_web_search.py`。真实 Key、外部网络、搜索覆盖率和真实模型调用质量仍需独立联调。
+代码在 `backend/app/tools/http/search.py`，网络执行沿用同目录的 `runtime.py`，专项回归在 `backend/tests/test_web_search.py`。真实 Key、外部网络、搜索覆盖率和真实模型调用质量仍需独立联调。
 
 ## 3. 自定义查询
 
@@ -95,11 +95,14 @@ TOOL_HTTP_ALLOWED_HOSTS=["restapi.amap.com","api.tavily.com"]
 | 入口 | 职责 |
 | --- | --- |
 | `backend/app/tools/router.py` | 空间目录、管理员 CRUD、本地参数校验 |
-| `management_contracts.py` | 声明契约和端点格式限制 |
+| `http/contracts.py` | 声明契约和端点格式限制 |
 | `models.py`、迁移 `0010_tool_management` | `managed_tools` 启停目录、`tool_versions` 不可变配置 |
 | `service.py` | 就绪检查、快照、哈希、当前策略与恢复授权 |
-| `default_http.py`、`registry.py` | 默认工具与固定高德查询契约 |
-| `http_runtime.py` | 公网 DNS 固定、TLS、密钥注入、只读执行与响应限制 |
+| `http/defaults.py`、`registry.py` | 默认工具与固定高德查询契约 |
+| `http/runtime.py`、`http/search.py` | 公网 DNS 固定、TLS、密钥注入、只读执行、网页搜索及响应限制 |
+| `builtin/contracts.py`、`builtin/text.py`、`builtin/files.py` | 内置参数、文本处理和用户工作空间文件读取 |
+| `mcp/` | 远程 MCP 客户端、用户凭证、注册与接口 |
+| `runner.py` | 固定分发本地内置工具，不做动态导入或执行模型代码 |
 | `tasks/execution.py`、`tasks/reliability.py` | 租约、取消、账本复用和提交前复核 |
 | `frontend/src/tools/` | 管理页面及 Agent/Skill 共用授权选项 |
 

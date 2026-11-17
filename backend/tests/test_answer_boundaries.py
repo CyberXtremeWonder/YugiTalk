@@ -92,7 +92,7 @@ def test_partial_sources_reach_worker_router_and_saved_message(client, storage, 
         ),
         Script([
             tool("knowledge_search", knowledge_base_id=base, query="Milvus"), worker_answer,
-        ], ["list_knowledge_bases", "knowledge_search"]),
+        ], ["list_knowledge_bases", "knowledge_search", "research_report", "export_document"]),
     ])
     assert result["status"] == "succeeded", result
     messages = client.get(f"/api/v1/conversations/{body['conversation_id']}/messages").json()
@@ -123,6 +123,7 @@ def test_fragmented_answer_is_batched_and_tail_survives_error(fail):
             Settings(app_env="test"), AgentConfig(name="test", tools=[]), Provider(),
             [{"role": "user", "content": "定义？", "rag_evidence": {
                 "coverage": "partial", "sources": [{"evidence_id": "E-real"}],
+                "internal_metadata": "internal-only" * 4000,
             }}], lambda kind, payload, reserve: events.append((kind, payload)),
             collected.append, 0,
         )

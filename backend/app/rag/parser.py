@@ -7,15 +7,21 @@ import re
 import sys
 from typing import Any
 
-from pypdf import PdfReader
+from pypdf import PdfReader, PdfWriter
 from pypdf.errors import PdfReadError
 
+from app.rag.chunking import PROFILES, chunk_pages
+from app.rag.docling import DOCLING_SUFFIXES, document_pages
+from app.rag.limits import MAX_DOCUMENT_CHUNKS, MAX_DOCUMENT_PAGES, MAX_TEXT_CHARACTERS
 
-def parse(content: bytes, suffix: str, strategy: str = "fixed") -> list[dict[str, object]]:
+
+def parse(
+    content: bytes, suffix: str, strategy: str = "fixed", *, optimize_jsonl: bool = True,
+) -> list[dict[str, object]]:
     """解析受支持的文本或文本文档，返回带页码和顺序的重叠分块。"""
     if not content or len(content) > 20 * 1024 * 1024:
         raise ValueError("empty_or_oversized_file")
-    if strategy not in {"fixed", "markdown_sections"} or (
+    if strategy not in {"fixed", "markdown_sections", "auto", *PROFILES} or (
         strategy == "markdown_sections" and suffix != ".md"
     ):
         raise ValueError("document_chunk_strategy_invalid")
@@ -24,31 +30,65 @@ def parse(content: bytes, suffix: str, strategy: str = "fixed") -> list[dict[str
         if not content.startswith(b"%PDF-"):
             raise ValueError("invalid_pdf")
         reader = PdfReader(io.BytesIO(content), strict=True)
-        if reader.is_encrypted or len(reader.pages) > 200:
-            raise ValueError("pdf_encrypted_or_too_many_pages")
-        total = 0
-        for number, page in enumerate(reader.pages, 1):
+        encrypted = reader.is_encrypted
+        if encrypted and not reader.decrypt(""):
+            raise ValueError("pdf_password_required")
+        if len(reader.pages) > MAX_DOCUMENT_PAGES:
+            raise ValueError("pdf_too_many_pages")
+        for page in reader.pages:
             stream = page.get_contents()
             if stream and len(stream.get_data()) > 8 * 1024 * 1024:
                 raise ValueError("pdf_page_too_large")
-            text = page.extract_text() or ""
-            total += len(text)
-            if total > 500000:
-                raise ValueError("text_too_large")
-            # PDF 字体映射可能生成 NUL；它没有可显示内容且 PostgreSQL 文本列禁止存储。
-            text = text.replace("\x00", "")
-            pages.append((number, text))
-        if not any(text.strip() for _, text in pages):
-            raise ValueError("pdf_requires_ocr")
-    elif suffix in {".txt", ".md"}:
+        if encrypted:
+            # 空密码可打开的 PDF 仍可能带加密标记；仅在内存中转换，原始文件保持原样。
+            writer = PdfWriter()
+            writer.clone_document_from_reader(reader)
+            decrypted = io.BytesIO()
+            writer.write(decrypted)
+            content = decrypted.getvalue()
+        pages = document_pages(content, suffix)
+    elif suffix in {".txt", ".md", ".jsonl"}:
         text = content.decode("utf-8-sig", errors="strict")
-        if "\x00" in text or len(text) > 500000 or content.startswith(b"%PDF-"):
+        if len(text) > MAX_TEXT_CHARACTERS:
+            raise ValueError("text_too_large")
+        if "\x00" in text or content.startswith(b"%PDF-"):
             raise ValueError("invalid_text")
-        pages = [(None, text)]
+        if suffix == ".jsonl":
+            for line in text.split("\n"):
+                if not line.strip():
+                    continue
+                try:
+                    record = json.loads(line)
+                    rendered = json.dumps(record, ensure_ascii=False, allow_nan=False)
+                    if optimize_jsonl and isinstance(record, dict) and isinstance(
+                        record.get("text"), str
+                    ):
+                        title = record.get("title")
+                        if title is None or isinstance(title, str):
+                            extra = {k: v for k, v in record.items() if k not in {"title", "text"}}
+                            rendered = "\n\n".join(value for value in (
+                                title, record["text"],
+                                json.dumps(extra, ensure_ascii=False) if extra else "",
+                            ) if value)
+                except ValueError:
+                    raise ValueError("invalid_jsonl") from None
+                pages.append((None, rendered))
+                if len(pages) > MAX_DOCUMENT_CHUNKS:
+                    raise ValueError("too_many_chunks")
+            if sum(len(record) for _, record in pages) > MAX_TEXT_CHARACTERS:
+                raise ValueError("text_too_large")
+        else:
+            pages = [(None, text)]
+    elif suffix in DOCLING_SUFFIXES:
+        pages = document_pages(content, suffix)
     else:
         raise ValueError("unsupported_file_type")
+    if strategy not in {"fixed", "markdown_sections"}:
+        return chunk_pages(pages, strategy, merge_short_sentences=(
+            suffix == ".jsonl" and optimize_jsonl
+        ))
     chunks: list[dict[str, object]] = []
-    for page_number, text in pages:
+    for record_number, (page_number, text) in enumerate(pages):
         text = text.strip()
         boundaries = [0]
         if strategy == "markdown_sections":
@@ -73,10 +113,12 @@ def parse(content: bytes, suffix: str, strategy: str = "fixed") -> list[dict[str
                     }
                     if strategy == "markdown_sections":
                         chunk["section"] = section
+                    if suffix == ".jsonl":
+                        chunk["section"] = record_number
                     chunks.append(chunk)
     if not chunks:
         raise ValueError("empty_document")
-    if len(chunks) > 1000:
+    if len(chunks) > MAX_DOCUMENT_CHUNKS:
         raise ValueError("too_many_chunks")
     return chunks
 
@@ -88,8 +130,8 @@ def main() -> None:
 
         resource: Any = importlib.import_module("resource")
 
-        resource.setrlimit(resource.RLIMIT_AS, (512 * 1024 * 1024, 512 * 1024 * 1024))
-        resource.setrlimit(resource.RLIMIT_CPU, (20, 20))
+        resource.setrlimit(resource.RLIMIT_AS, (1024 * 1024 * 1024, 1024 * 1024 * 1024))
+        resource.setrlimit(resource.RLIMIT_CPU, (120, 120))
     result: dict[str, object]
     try:
         result = {
@@ -104,14 +146,25 @@ def main() -> None:
             "empty_or_oversized_file",
             "invalid_pdf",
             "pdf_encrypted_or_too_many_pages",
+            "pdf_password_required",
+            "pdf_too_many_pages",
             "pdf_page_too_large",
             "text_too_large",
-            "pdf_requires_ocr",
             "invalid_text",
+            "invalid_jsonl",
             "unsupported_file_type",
             "empty_document",
             "too_many_chunks",
             "document_chunk_strategy_invalid",
+            "chunk_tokenizer_unavailable",
+            "chunk_tokenizer_model_mismatch",
+            "invalid_office",
+            "office_expanded_too_large",
+            "docling_unavailable",
+            "docling_configuration",
+            "docling_conversion_failed",
+            "docling_response_invalid",
+            "docling_response_too_large",
         }
         code = (
             "invalid_pdf"

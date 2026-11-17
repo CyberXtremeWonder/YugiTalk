@@ -47,7 +47,7 @@ def compose(env_file: Path = ENV_FILE, project: str = PROJECT) -> list[str]:
         "-f",
         str(ROOT / "docker-compose.prod.yml"),
         "-f",
-        str(ROOT / "docker-compose.stage6-test.yml"),
+        str(ROOT / "deploy/tests/docker-compose.stage6-test.yml"),
         "-p",
         project,
     ]

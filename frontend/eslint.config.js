@@ -6,6 +6,7 @@ export default tseslint.config(
     ignores: [
       "dist/**",
       "node_modules/**",
+      ".cache/**",
       "tests/stage0/**",
       "playwright.stage0.config.ts",
       "scripts/**",

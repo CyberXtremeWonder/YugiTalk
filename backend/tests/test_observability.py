@@ -1,16 +1,20 @@
 """验证运维认证、指标标签边界与追踪中的敏感数据保护。"""
 
+from datetime import UTC, datetime, timedelta
+
 import pytest
 from fastapi.testclient import TestClient
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, delete
+from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from app.core.config import Settings
 from app.core.entities import Base
 from app.main import create_app
 from app.observability.telemetry import Telemetry
+from app.tasks.models import Run
 
 
 def test_model_and_tool_spans_share_task_context(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -80,6 +84,74 @@ def test_metrics_require_independent_authentication() -> None:
         assert "private-secret" not in response.text
         assert "unknown-user-id" not in response.text
         assert 'route="unmatched"' in response.text
+        assert "yugitalk_queue_oldest_seconds 0.0" in response.text
+        assert 'yugitalk_recent_runs{status="succeeded"} 0.0' in response.text
+        assert 'yugitalk_recent_runs{status="failed"} 0.0' in response.text
+
+
+def test_task_alert_metrics_refresh_queue_and_recent_outcomes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """排队年龄与近期终态按数据库快照更新，旧任务、清理及时间窗口不会产生累计误报。"""
+    sampled = datetime(2026, 11, 3, 8, tzinfo=UTC)
+    monkeypatch.setattr("app.observability.router.now", lambda: sampled)
+    engine = create_engine(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
+    Base.metadata.create_all(engine)
+    rows = [
+        ("queue-old", "queued", sampled - timedelta(seconds=120), None),
+        ("queue-new", "queued", sampled - timedelta(seconds=20), None),
+        ("success", "succeeded", sampled - timedelta(minutes=5), sampled - timedelta(minutes=2)),
+        ("failure", "failed", sampled - timedelta(minutes=5), sampled - timedelta(minutes=1)),
+        ("old-failure", "failed", sampled - timedelta(minutes=20), sampled - timedelta(minutes=16)),
+        ("future-failure", "failed", sampled, sampled + timedelta(minutes=1)),
+    ]
+    with Session(engine) as db:
+        db.add_all(
+            Run(
+                id=key,
+                account_id="private-owner",
+                owner_id="private-owner",
+                conversation_id="private-conversation",
+                agent_version_id="private-version",
+                snapshot={},
+                idempotency_key=key,
+                request_hash="test-hash",
+                prompt="private-prompt",
+                reserved_tokens=0,
+                status=status,
+                created_at=created,
+                finished_at=finished,
+            )
+            for key, status, created, finished in rows
+        )
+        db.commit()
+    config = Settings(_env_file=None, app_env="test", metrics_token="m" * 40)
+    headers = {"Authorization": "Bearer " + "m" * 40}
+    with TestClient(create_app(config, engine=engine)) as client:
+        first = client.get("/internal/metrics", headers=headers)
+        assert first.status_code == 200
+        assert "yugitalk_queue_oldest_seconds 120.0" in first.text
+        assert 'yugitalk_recent_runs{status="succeeded"} 1.0' in first.text
+        assert 'yugitalk_recent_runs{status="failed"} 1.0' in first.text
+        assert "private-owner" not in first.text and "private-prompt" not in first.text
+
+        with Session(engine) as db:
+            db.execute(delete(Run).where(Run.id.in_(["queue-old", "failure", "future-failure"])))
+            queued = db.get(Run, "queue-new")
+            assert queued
+            queued.status, queued.finished_at = "succeeded", sampled
+            db.commit()
+        second = client.get("/internal/metrics", headers=headers)
+        assert "yugitalk_queue_oldest_seconds 0.0" in second.text
+        assert 'yugitalk_recent_runs{status="succeeded"} 2.0' in second.text
+        assert 'yugitalk_recent_runs{status="failed"} 0.0' in second.text
+
+        sampled += timedelta(minutes=16)
+        expired = client.get("/internal/metrics", headers=headers)
+        assert 'yugitalk_recent_runs{status="succeeded"} 0.0' in expired.text
+        assert 'yugitalk_recent_runs{status="failed"} 0.0' in expired.text
 
 
 def test_telemetry_registries_do_not_share_counters() -> None:

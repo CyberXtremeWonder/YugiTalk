@@ -16,11 +16,23 @@ x-runtime: &runtime
     driver: json-file
     options: {max-size: "10m", max-file: "3"}
   volumes:
+    - document_uploads:/var/lib/yugitalk/uploads
     - ./${PROD_DATA_ROOT:-data/production}/s3-ca:/etc/yugitalk/s3:ro
+    - ${BGE_MODEL_PATH:-./.cache/models/models--BAAI--bge-m3}:/models/bge-m3:ro
   environment: &production
     APP_ENV: production
+    APP_WORKERS: ${APP_WORKERS:-1}
     LOG_LEVEL: INFO
+    DOCLING_URL: http://docling:5001
+    BGE_MODEL_PATH: /models/bge-m3
     DATABASE_URL: postgresql://yugitalk:${POSTGRES_PASSWORD:?必须配置生产密码}@postgres:5432/yugitalk
+    DATABASE_POOL_SIZE: ${DATABASE_POOL_SIZE:-5}
+    DATABASE_MAX_OVERFLOW: ${DATABASE_MAX_OVERFLOW:-10}
+    DATABASE_POOL_TIMEOUT_SECONDS: ${DATABASE_POOL_TIMEOUT_SECONDS:-5}
+    API_DATABASE_CONCURRENCY: ${API_DATABASE_CONCURRENCY:-10}
+    API_DATABASE_QUEUE_LIMIT: ${API_DATABASE_QUEUE_LIMIT:-100}
+    API_DATABASE_QUEUE_TIMEOUT_SECONDS: ${API_DATABASE_QUEUE_TIMEOUT_SECONDS:-1}
+    RUN_EVENT_FALLBACK_SECONDS: ${RUN_EVENT_FALLBACK_SECONDS:-5}
     REDIS_URL: redis://:${REDIS_PASSWORD:?必须配置生产密码}@redis:6379/0
     STORAGE_ENDPOINT: ${STORAGE_ENDPOINT:?必须配置现有S3服务地址}
     STORAGE_BUCKET: ${STORAGE_BUCKET:?必须配置项目专用Bucket}
@@ -37,10 +49,15 @@ x-runtime: &runtime
     MODEL_API_KEY: ${MODEL_API_KEY:?必须配置真实模型密钥}
     MODEL_CA_FILE: ${MODEL_CA_FILE:-}
     MODEL_MAX_STREAM_BYTES: ${MODEL_MAX_STREAM_BYTES:-4194304}
+    MODEL_CONTEXT_LIMIT_BYTES: ${MODEL_CONTEXT_LIMIT_BYTES:-131072}
     TOOL_HTTP_ALLOWED_HOSTS: '${TOOL_HTTP_ALLOWED_HOSTS:-[]}'
     TOOL_SECRETS: '${TOOL_SECRETS:-{}}'
+    WORKSPACE_ALLOWED_ROOTS: '${WORKSPACE_ALLOWED_ROOTS:-[]}'
     AMAP_API_KEY: ${AMAP_API_KEY:-}
     TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+    ARIA2_RPC_URL: ${ARIA2_RPC_URL:-}
+    ARIA2_RPC_SECRET: ${ARIA2_RPC_SECRET:-}
+    TORRENT_DOWNLOAD_ROOT: ${TORRENT_DOWNLOAD_ROOT:-/downloads}
     REGISTRATION_ENABLED: ${REGISTRATION_ENABLED:-true}
     SMTP_HOST: ${SMTP_HOST:-}
     SMTP_PORT: ${SMTP_PORT:-465}
@@ -71,6 +88,9 @@ x-runtime: &runtime
     EMBEDDING_MODEL: ${EMBEDDING_MODEL:-BAAI/bge-m3}
     EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-http://embedding:8000/v1}
     EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:?必须配置生产嵌入认证}
+    MEMORY_RANKING_WEIGHTS: '${MEMORY_RANKING_WEIGHTS:-[0.90,0.05,0.05]}'
+    MEMORY_RECENCY_HALF_LIFE_DAYS: ${MEMORY_RECENCY_HALF_LIFE_DAYS:-90}
+    MEMORY_EMBEDDING_TIMEOUT_SECONDS: ${MEMORY_EMBEDDING_TIMEOUT_SECONDS:-5}
     SESSION_SECRET: ${SESSION_SECRET:?必须配置生产会话密钥}
     AUTH_TRUSTED_ORIGINS: '["${PUBLIC_ORIGIN:?必须配置HTTPS来源}"]'
     CORS_ORIGINS: '[]'
@@ -88,7 +108,8 @@ services:
   api:
     <<: *runtime
     # 20并发时提交、权限复核与流式读取共享CPU；明确容量，按实际配置复验。
-    cpus: 2.0
+    cpus: ${API_CPUS:-2.0}
+    mem_limit: ${API_MEMORY_LIMIT:-768m}
     build: !reset null
     ports: !reset []
     depends_on: !override
@@ -104,6 +125,12 @@ services:
   migrate:
     <<: *runtime
     restart: "no"
+  docling:
+    ports: !reset []
+    networks: !override [private]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    logging: *rotation
   postgres:
     networks: !override [private]
     # 首次初始化的临时实例仅监听 Unix socket，TCP 探测避免提前启动迁移。

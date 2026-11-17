@@ -1,0 +1,99 @@
+{
+  "model": "deepseek-flash",
+  "results": [
+    {
+      "question": "你好",
+      "direct": false,
+      "status": "succeeded",
+      "error_code": null,
+      "seconds": 5.029,
+      "model_calls": 5,
+      "calls": [
+        {
+          "purpose": null,
+          "seconds": 1.566
+        },
+        {
+          "purpose": null,
+          "seconds": 1.06
+        },
+        {
+          "purpose": null,
+          "seconds": 0.863
+        },
+        {
+          "purpose": null,
+          "seconds": 0.858
+        },
+        {
+          "purpose": null,
+          "seconds": 0.55
+        }
+      ],
+      "answer": "你好！我是你的中文助手，有什么可以帮你的吗？"
+    },
+    {
+      "question": "你好",
+      "direct": true,
+      "status": "succeeded",
+      "error_code": null,
+      "seconds": 0.852,
+      "model_calls": 1,
+      "calls": [
+        {
+          "purpose": null,
+          "seconds": 0.83
+        }
+      ],
+      "answer": "你好！有什么可以帮你？"
+    },
+    {
+      "question": "什么是 RAG？",
+      "direct": false,
+      "status": "failed",
+      "error_code": "agent_control_invalid",
+      "seconds": 8.417,
+      "model_calls": 5,
+      "calls": [
+        {
+          "purpose": null,
+          "seconds": 1.376
+        },
+        {
+          "purpose": null,
+          "seconds": 1.659
+        },
+        {
+          "purpose": null,
+          "seconds": 1.379
+        },
+        {
+          "purpose": null,
+          "seconds": 1.79
+        },
+        {
+          "purpose": null,
+          "seconds": 2.15
+        }
+      ],
+      "answer": null
+    },
+    {
+      "question": "什么是 RAG？",
+      "direct": true,
+      "status": "succeeded",
+      "error_code": null,
+      "seconds": 1.036,
+      "model_calls": 1,
+      "calls": [
+        {
+          "purpose": null,
+          "seconds": 1.016
+        }
+      ],
+      "answer": "RAG（检索增强生成）是一种先检索外部资料、再把检索结果提供给大模型生成答案的技术，能提升准确性并减少编造。"
+    }
+  ],
+  "date": "2026-11-02",
+  "scope": "Synthetic questions, isolated SQLite, real provider; one sample per question and mode; not a production benchmark."
+}

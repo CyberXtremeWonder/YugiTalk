@@ -39,6 +39,17 @@ class Telemetry:
             registry=self.registry,
         )
         self.runs = Gauge("yugitalk_runs", "各状态的持久任务数", ["status"], registry=self.registry)
+        self.queue_oldest_seconds = Gauge(
+            "yugitalk_queue_oldest_seconds",
+            "当前排队任务中最早创建任务的年龄，无排队任务时为零",
+            registry=self.registry,
+        )
+        self.recent_runs = Gauge(
+            "yugitalk_recent_runs",
+            "最近十五分钟完成且仍保留的任务数",
+            ["status"],
+            registry=self.registry,
+        )
         self.tokens = Gauge(
             "yugitalk_accounted_tokens", "累计结算的保守额度", registry=self.registry
         )
@@ -52,6 +63,10 @@ class Telemetry:
             session.trust_env = False
             exporter = OTLPSpanExporter(
                 endpoint=settings.otel_exporter_otlp_endpoint.rstrip("/") + "/v1/traces",
+                headers={
+                    key: value.get_secret_value()
+                    for key, value in settings.yugitalk_otlp_headers.items()
+                },
                 timeout=2,
                 session=session,
             )

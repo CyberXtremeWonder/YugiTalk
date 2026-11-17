@@ -40,7 +40,11 @@ def test_batch_reuses_login_with_independent_conversations(monkeypatch):
                         if name == 'RAG_TEST_API_URL' else 'fixture')
     with adapter.rag_session() as rag:
         for _ in range(50):
-            assert rag('question') == {'answer': 'answer', 'sources': []}
+            result = rag('question')
+            assert result['answer'] == 'answer'
+            assert result['sources'] == []
+            assert result['run_id'].startswith('run-')
+            assert result['conversation_id'].startswith('conversation-')
     assert calls.count('/api/v1/auth/login') == 1
     assert calls.count('/api/v1/me/conversations') == 50
     assert clients[0].is_closed
@@ -63,3 +67,30 @@ def test_login_rate_limit_stops_before_tasks(monkeypatch):
         with adapter.rag_session():
             pytest.fail('限流不应进入评测')
     assert calls == ['/api/v1/auth/login']
+
+
+def test_clarification_cancels_task_before_reporting_abstention(monkeypatch):
+    calls = []
+    keys = []
+
+    def handler(request):
+        calls.append(request.url.path)
+        if request.url.path.endswith('/me/conversations'):
+            return httpx.Response(201, json={'id': 'conversation'})
+        if request.url.path.endswith('/runs'):
+            keys.append(request.headers['Idempotency-Key'])
+            if len(keys) == 1:
+                return httpx.Response(429, json={'detail': {'code': 'run_concurrency_exceeded'}})
+            return httpx.Response(202, json={'id': 'run'})
+        if request.url.path.endswith('/cancel'):
+            return httpx.Response(200, json={})
+        return httpx.Response(200, json={'status': 'waiting_input', 'model': 'fixture-model'})
+
+    monkeypatch.setattr(adapter.time, 'sleep', lambda seconds: None)
+    monkeypatch.setattr(adapter, 'config', lambda name: 'fixture')
+    with httpx.Client(base_url='http://fixture.test', transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(adapter.RagNeedsClarification) as result:
+            adapter._call_rag(client, {}, 'question')
+    assert calls[-1] == '/api/v1/runs/run/cancel'
+    assert result.value.result['run_status'] == 'waiting_input'
+    assert keys[0] == keys[1]

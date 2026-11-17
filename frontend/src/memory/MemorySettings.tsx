@@ -1,9 +1,12 @@
+import { useNotice } from "../shared/useNotice";
+import { EditorPanel } from "../shared/EditorPanel";
 import { useEffect, useState } from "react";
 import { identityRequest, type Identity } from "../identity/api";
 
 interface Memory {
   id: string;
   content: string;
+  importance: number;
 }
 /** 管理用户主动确认的长期记忆、内容编辑与使用开关。 */
 export function MemorySettings({
@@ -16,9 +19,10 @@ export function MemorySettings({
   const [enabled, setEnabled] = useState(true);
   const [rows, setRows] = useState<Memory[]>([]);
   const [content, setContent] = useState("");
+  const [importance, setImportance] = useState(3);
   const [confirmed, setConfirmed] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
-  const [notice, setNotice] = useState("");
+  const { notice, setNotice, noticeIsError, reportError } = useNotice();
   const [busy, setBusy] = useState(false);
   const path = `/accounts/${accountId}`;
   /** 重新读取当前功能的授权数据，并同步页面显示。 */
@@ -41,7 +45,7 @@ export function MemorySettings({
         }
       })
       .catch((error) => {
-        if (active) setNotice(error.message);
+        if (active) reportError(error.message);
       });
     return () => {
       active = false;
@@ -61,12 +65,13 @@ export function MemorySettings({
       await refresh();
       // 以服务器返回的开关和列表为准，成功后清空草稿及确认标记，避免复用上次确认。
       setContent("");
+      setImportance(3);
       setEditing(null);
       setConfirmed(false);
       setNotice("偏好已更新。");
     } catch (error) {
       rollback?.();
-      setNotice(error instanceof Error ? error.message : "操作失败");
+      reportError(error instanceof Error ? error.message : "操作失败");
     } finally {
       setBusy(false);
     }
@@ -100,59 +105,94 @@ export function MemorySettings({
       </label>
       {enabled && (
         <>
-          <form
-            onSubmit={(event) => {
-              event.preventDefault();
-              void mutate(
-                editing ? `/memories/${editing}` : `${path}/memories`,
-                editing ? "PATCH" : "POST",
-                { content, confirmed },
-              );
+          <EditorPanel
+            editing={!!editing}
+            title="编辑偏好记忆"
+            busy={busy}
+            onClose={() => {
+              setEditing(null);
+              setContent("");
+              setImportance(3);
+              setConfirmed(false);
             }}
           >
-            <label>
-              偏好内容
-              <textarea
-                value={content}
-                onChange={(event) => setContent(event.target.value)}
-                required
-                maxLength={1000}
-                placeholder="例如：默认使用中文，代码示例优先使用 Python。"
-              />
-            </label>
-            <label className="memory-toggle">
-              <input
-                type="checkbox"
-                checked={confirmed}
-                onChange={(event) => setConfirmed(event.target.checked)}
-              />
-              我确认保存此偏好，内容不含密码、令牌或密钥
-            </label>
-            <button disabled={!confirmed || busy}>
-              {editing ? "更新偏好" : "保存偏好"}
-            </button>
-            {editing && (
-              <button
-                type="button"
-                onClick={() => {
-                  setEditing(null);
-                  setContent("");
-                }}
-              >
-                取消编辑
+            <form
+              onSubmit={(event) => {
+                event.preventDefault();
+                void mutate(
+                  editing ? `/memories/${editing}` : `${path}/memories`,
+                  editing ? "PATCH" : "POST",
+                  { content, confirmed, importance },
+                );
+              }}
+            >
+              <label>
+                偏好内容
+                <textarea
+                  value={content}
+                  onChange={(event) => setContent(event.target.value)}
+                  required
+                  maxLength={1000}
+                  placeholder="例如：默认使用中文，代码示例优先使用 Python。"
+                />
+              </label>
+              <label>
+                重要程度
+                <select
+                  aria-label="重要程度"
+                  value={importance}
+                  onChange={(event) =>
+                    setImportance(Number(event.target.value))
+                  }
+                  disabled={busy}
+                >
+                  <option value={1}>1 · 很低</option>
+                  <option value={2}>2 · 较低</option>
+                  <option value={3}>3 · 普通</option>
+                  <option value={4}>4 · 较高</option>
+                  <option value={5}>5 · 很高</option>
+                </select>
+              </label>
+              <label className="memory-toggle">
+                <input
+                  type="checkbox"
+                  checked={confirmed}
+                  onChange={(event) => setConfirmed(event.target.checked)}
+                />
+                我确认保存此偏好，内容不含密码、令牌或密钥
+              </label>
+              {editing && notice && (
+                <p role={noticeIsError ? "alert" : "status"}>{notice}</p>
+              )}
+              <button disabled={!confirmed || busy}>
+                {editing ? "更新偏好" : "保存偏好"}
               </button>
-            )}
-          </form>
+              {editing && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditing(null);
+                    setContent("");
+                    setImportance(3);
+                  }}
+                >
+                  取消编辑
+                </button>
+              )}
+            </form>
+          </EditorPanel>
           <ul className="document-list">
             {rows.map((row) => (
               <li key={row.id}>
                 <p>{row.content}</p>
+                <p>重要程度：{row.importance} / 5</p>
                 <div>
                   <button
                     disabled={busy}
                     onClick={() => {
                       setEditing(row.id);
                       setContent(row.content);
+                      setImportance(row.importance);
                       setConfirmed(false);
                     }}
                   >
@@ -170,7 +210,7 @@ export function MemorySettings({
           </ul>
         </>
       )}
-      <p role="status">{notice}</p>
+      <p role={noticeIsError ? "alert" : "status"}>{notice}</p>
     </section>
   );
 }

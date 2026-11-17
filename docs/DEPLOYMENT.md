@@ -46,11 +46,13 @@ docker compose --env-file .env.production -f docker-compose.yml -f docker-compos
 
 开发与生产默认关闭对话 Token 额度拦截：`TASK_BUDGET_ENABLED=false`、`CUMULATIVE_BUDGET_ENABLED=false`。不因单次预留或空间、用户累计用量耗尽拒绝任务，仍记录保守用量和供应商返回的 Token。空间并发4、用户并发2，模型输出上限、上下文容量、任务超时、步骤和工具次数继续生效。以后需要预算保护时可显式开启两个开关；仅开启时才使用空间、用户累计默认100000及助手的单次预算配置，累计额度不自动按日重置。
 
-Prometheus 每15秒抓取 API 内部指标，以独立 `METRICS_TOKEN` 认证。代理禁止访问 `/internal/`。指标只记录模板路由、状态、响应头耗时和任务聚合；任务 Token 汇总不重复计算空间与用户两份预算。
+Prometheus 每15秒抓取 API 内部指标，以独立 `METRICS_TOKEN` 认证。代理禁止访问 `/internal/`。指标只记录模板路由、状态、响应头耗时和任务聚合；任务 Token 汇总不重复计算空间与用户两份预算。可选邮件告警通过独立覆盖文件启用，见[邮件告警配置](./ALERTING.md)。
 
-Jaeger 接收 API → 队列 → Worker → 模型/工具步骤的 OTLP 追踪。默认采样10%，批次队列2048、导出超时2秒；不采集提示词、模型正文、工具参数或原始异常消息。SDK 线程及上下文增加运行成本。Prometheus 与 Jaeger 业务文件也位于项目目录，保留14天；Docker JSON 日志每服务10MB×3轮转。告警规则覆盖 API 抓取失败和 HTTP 错误比例，目前没有配置外部通知渠道，也没有向他人发送消息。
+Jaeger 接收 API → 队列 → Worker → 模型/工具步骤的 OTLP 追踪。默认采样10%，批次队列2048、导出超时2秒；不采集提示词、模型正文、工具参数或原始异常消息。SDK 线程及上下文增加运行成本。Prometheus 与 Jaeger 业务文件也位于项目目录，保留14天；Docker JSON 日志每服务10MB×3轮转。告警规则覆盖 API 抓取失败、HTTP 错误比例、最老排队任务和近期任务失败比例；邮件需按上述说明单独配置启用，代码检查通过不代表实际收件成功。
 
 ## 冷备和恢复
+
+数据库只读盘点和过期身份记录清理见[数据生命周期说明](./DATA_LIFECYCLE.md)。维护命令默认只读；定期身份清理默认关闭，不影响原有聊天、研究文件和知识库的保留策略。
 
 以下本机冷备恢复已经在隔离环境验证。切换现有外部S3后，脚本会在停止服务前拒绝操作；对象版本/快照与数据库恢复点、远端恢复工具及真实演练尚待服务信息明确后实现。以下正式发布命令也因此尚不可用于外部S3，不能绕过备份门槛。[详细范围](./S3_SETUP.md)
 
@@ -70,11 +72,11 @@ backend/.venv/Scripts/python.exe scripts/production-data.py restore --snapshot d
 准备已扫描的镜像，明确新旧版本同时兼容的数据库迁移版本。发布脚本先验证当前镜像仍能重新创建、添加本地保留标签，再冷备并保存实际镜像 ID，最后部署和等待健康；失败自动恢复原镜像。此工具只适用于兼容当前 Schema 的版本，不能自动撤销迁移或把备份覆盖回运行库。
 
 ```powershell
-backend/.venv/Scripts/python.exe scripts/deploy-production.py --env-file .env.production --backend-image yugitalk-backend:0.2.0 --frontend-image yugitalk-frontend:0.2.0 --compatible-schema 0007_reliability
-backend/.venv/Scripts/python.exe scripts/deploy-production.py --env-file .env.production --compatible-schema 0007_reliability --rollback
+backend/.venv/Scripts/python.exe scripts/deploy-production.py --env-file .env.production --backend-image yugitalk-backend:0.2.0 --frontend-image yugitalk-frontend:0.2.0 --compatible-schema 0027_memory_importance
+backend/.venv/Scripts/python.exe scripts/deploy-production.py --env-file .env.production --compatible-schema 0027_memory_importance --rollback
 ```
 
-操作记录位于 `data/production/backups/last-release.json`；只能回退这一记录中的上一组镜像，旧记录需另行归档。数据库版本不匹配时拒绝操作；破坏性变更采用先兼容再清理方案，单独演练。项目镜像清理脚本保护全部容器引用、现用发行标签、发布记录、构建上一版和快照清单中的固定镜像；它只定向清理项目构建残留，不使用全局 prune。带版本标签的多余镜像需先核对恢复用途，再按确切标签删除；未采用的第三方候选另核对其没有容器引用，不删除整个公共仓库。
+上面的 `0027_memory_importance` 是当前源码迁移头示例，必须先查询目标库 `alembic_version` 并确认镜像兼容，不能照抄参数来绕过版本检查。操作记录位于 `data/production/backups/last-release.json`；只能回退这一记录中的上一组镜像，旧记录需另行归档。数据库版本不匹配时拒绝操作；破坏性变更采用先兼容再清理方案，单独演练。项目镜像清理脚本保护全部容器引用、现用发行标签、发布记录、构建上一版和快照清单中的固定镜像；它只定向清理项目构建残留，不使用全局 prune。带版本标签的多余镜像需先核对恢复用途，再按确切标签删除；未采用的第三方候选另核对其没有容器引用，不删除整个公共仓库。
 
 ## 隔离验收和停止服务
 
@@ -87,12 +89,14 @@ pwsh -NoProfile -File scripts/test-stage6.ps1 -IncludeProduction -IncludeRestore
 停止测试环境时使用三个文件：
 
 ```powershell
-docker compose --env-file .cache/stage6-production.env -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.stage6-test.yml -p yugitalk-stage6 down
+docker compose --env-file .cache/stage6-production.env -f docker-compose.yml -f docker-compose.prod.yml -f deploy/tests/docker-compose.stage6-test.yml -p yugitalk-stage6 down
 ```
 
 正式环境停止使用首次部署的两份文件和 `.env.production` 执行 `down`。绑定目录不会随 down 删除；不提供自动删除业务目录的卸载命令。
 
 ## 实现参考
+
+API 多进程、数据库准入、连接池参数及 SSE 通知的配置和连接预算见 [并发配置](CONCURRENCY.md)。
 
 - [Compose 合并和清空规则](https://docs.docker.com/reference/compose-file/merge/)：本项目显式清空开发构建和端口。
 - [Milvus 2.5 认证](https://milvus.io/docs/v2.5.x/authenticate.md)：生产启用认证与独立 root 密码。

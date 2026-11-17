@@ -1,6 +1,7 @@
 """简单问答减少模型往返，保留来源、流式输出、目录隔离与检查点恢复。"""
 
 import json
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import select
@@ -10,6 +11,7 @@ from test_enhanced_rag import uploaded
 from test_reliability import expire_lease, recover
 from test_subagents import Script, execute, tool
 
+from app.agents.routing import simple_question
 from app.identity.models import User
 from app.providers.client import ModelEvent, Reply
 from app.rag.models import KnowledgeBase
@@ -18,6 +20,70 @@ from app.tasks.ledger_models import ToolExecution
 from app.tasks.models import Run, RunEvent
 
 pytest_plugins = ["test_identity", "test_knowledge"]
+
+KNOWLEDGE_TOOLS = [
+    "list_knowledge_bases", "knowledge_search", "research_report", "export_document",
+]
+
+
+@pytest.mark.parametrize("message, expected", [
+    ("你好！", True), ("Hello", True), ("什么是 RAG？", True),
+    ("Milvus 是什么", True), ("请解释一下 BGE-M3", True),
+    ("先查资料再解释什么是 RAG", False), ("研究是什么并生成报告", False),
+    ("今天的天气是什么", False), ("继续", False), ("什么是 RAG？然后部署它", False),
+    ("什么是 RAG\n帮我生成文件", False), ("请生成报告", False),
+    ("什么是RAG并部署它", False), ("什么是RAG和MCP", False),
+    ("比较两个模型", False), ("什么是" + "长" * 81, False),
+])
+def test_simple_question_routing_is_conservative(message, expected):
+    assert simple_question(message) is expected
+
+
+def test_closed_loop_greeting_uses_one_call_and_keeps_published_config(client):
+    from app.agents.models import AgentVersion
+
+    _, body, task, agent = setup_task(client, "你好", closed_loop=True, token_budget=100000)
+    calls = []
+
+    def answer(messages):
+        calls.append(messages)
+        return "你好！"
+
+    result = execute(client, task, [Script([answer], [
+        "text_stats", "format_report", "weather_query", "traffic_query", "web_search",
+        "list_knowledge_bases", "knowledge_search", "research_report", "export_document",
+    ])])
+    assert result["status"] == "succeeded", result
+    assert len(calls) == 1
+    with Session(client.app.state.database) as db:
+        run = db.get(Run, task["id"])
+        assert run.snapshot["closed_loop"] and run.snapshot["direct_mode"]
+        assert run.checkpoint["state"]["step"] == 1
+        assert "loop" not in run.checkpoint["state"]
+        assert db.get(AgentVersion, agent["version_id"]).config["closed_loop"]
+    events = client.get(task["events_url"]).text
+    assert "agent_plan" not in events and "agent_reflect" not in events
+    messages = client.get(f"/api/v1/conversations/{body['conversation_id']}/messages").json()
+    assert messages["items"][-1]["content"] == "你好！"
+
+
+def test_closed_loop_followup_keeps_original_route(client):
+    headers, body, _, _ = setup_task(client, "研究项目部署方案", closed_loop=True)
+    response = client.post("/api/v1/runs", json={**body, "message": "什么是 RAG？"}, headers={
+        **headers, "Idempotency-Key": str(uuid4()),
+    })
+    assert response.status_code == 202, response.text
+    with Session(client.app.state.database) as db:
+        run = db.get(Run, response.json()["id"])
+        assert run.snapshot["closed_loop"] and not run.snapshot["direct_mode"]
+
+
+@pytest.mark.parametrize("message", ["继续", "请生成研究报告", "先查资料再解释什么是 RAG"])
+def test_closed_loop_non_question_keeps_original_route(client, message):
+    _, _, task, _ = setup_task(client, message, closed_loop=True)
+    with Session(client.app.state.database) as db:
+        run = db.get(Run, task["id"])
+        assert run.snapshot["closed_loop"] and not run.snapshot["direct_mode"]
 
 
 def catalog(messages):
@@ -34,9 +100,12 @@ def catalog(messages):
     raise AssertionError("missing knowledge catalog")
 
 
-def test_simple_search_uses_one_provider_two_calls_and_streams(client, storage):
+@pytest.mark.parametrize("closed_loop", [False, True])
+def test_simple_search_uses_one_provider_two_calls_and_streams(client, storage, closed_loop):
     _, _, base, _ = uploaded(client)
-    _, body, task, _ = setup_task(client, "Milvus 是什么", tools=[], token_budget=100000)
+    _, body, task, _ = setup_task(
+        client, "Milvus 是什么", tools=[], token_budget=100000, closed_loop=closed_loop,
+    )
     answer = "Milvus 保存向量。" + "".join(chr(0x4E00 + i) for i in range(130))
     calls, providers = [], []
 
@@ -73,8 +142,12 @@ def test_simple_search_uses_one_provider_two_calls_and_streams(client, storage):
     assert rows["items"][-1]["sources"]
 
 
-def test_direct_resume_reuses_completed_business_tool(client):
-    _, _, task, _ = setup_task(client, "统计 abc", tools=["text_stats"], token_budget=100000)
+@pytest.mark.parametrize("closed_loop", [False, True])
+def test_direct_resume_reuses_completed_business_tool(client, closed_loop):
+    _, _, task, _ = setup_task(
+        client, "字符统计是什么", tools=["text_stats"], token_budget=100000,
+        closed_loop=closed_loop,
+    )
 
     class Crash(BaseException):
         pass
@@ -85,12 +158,12 @@ def test_direct_resume_reuses_completed_business_tool(client):
     with pytest.raises(Crash):
         execute(client, task, [Script([
             tool("text_stats", text="abc"), crash,
-        ], ["text_stats", "list_knowledge_bases", "knowledge_search"])])
+        ], ["text_stats", *KNOWLEDGE_TOOLS])])
     expire_lease(client, task["id"])
     recover(client)
     result = execute(client, task, [Script([
         "统计完成。",
-    ], ["text_stats", "list_knowledge_bases", "knowledge_search"])])
+    ], ["text_stats", *KNOWLEDGE_TOOLS])])
     assert result["status"] == "succeeded", result
     with Session(client.app.state.database) as db:
         assert len(list(db.scalars(select(ToolExecution)))) == 1
@@ -125,7 +198,7 @@ def test_direct_catalog_is_private_and_paginated(client):
 
     result = execute(client, task, [Script([
         next_page, answer,
-    ], ["list_knowledge_bases", "knowledge_search"])])
+    ], KNOWLEDGE_TOOLS)])
     assert result["status"] == "succeeded", result
 
 
@@ -133,7 +206,7 @@ def test_direct_cannot_delegate_or_expand_permissions(client):
     _, _, task, _ = setup_task(client, "执行任务", tools=[], token_budget=100000)
     result = execute(client, task, [Script([
         tool("delegate_task", task="越权委派"),
-    ], ["list_knowledge_bases", "knowledge_search"])])
+    ], KNOWLEDGE_TOOLS)])
     assert result["error_code"] == "tool_not_authorized"
 
 
@@ -146,7 +219,7 @@ def test_complex_worker_also_receives_catalog(client):
 
     result = execute(client, task, [
         Script([tool("delegate_task", task="比较两个项目"), "无法比较。"], ["delegate_task"]),
-        Script([answer], ["list_knowledge_bases", "knowledge_search"]),
+        Script([answer], KNOWLEDGE_TOOLS),
     ])
     assert result["status"] == "succeeded", result
 
@@ -160,7 +233,7 @@ def test_legacy_task_keeps_router_path(client):
         db.commit()
     result = execute(client, task, [
         Script([tool("delegate_task", task="简单问题"), "最终答案。"], ["delegate_task"]),
-        Script(["子结果。"], ["list_knowledge_bases", "knowledge_search"]),
+        Script(["子结果。"], KNOWLEDGE_TOOLS),
     ])
     assert result["status"] == "succeeded", result
 
@@ -179,6 +252,6 @@ def test_direct_refuses_removed_source_before_streaming(client, storage):
 
     result = execute(client, task, [Script([
         tool("knowledge_search", knowledge_base_id=base, query="Milvus"), remove_source,
-    ], ["list_knowledge_bases", "knowledge_search"])])
+    ], KNOWLEDGE_TOOLS)])
     assert result["error_code"] == "knowledge_source_removed"
     assert "不得公开的答案" not in client.get(task["events_url"]).text

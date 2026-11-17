@@ -200,8 +200,11 @@ def materialize(
             for child in children
         ):
             continue
-        if len(members) >= max(2, math.ceil(parent.child_count * settings.rag_merge_ratio)):
-            # 多个子块覆盖同一段的大部分内容时，改用父块原文，减少碎片并保留上下文。
+        document = db.get(Document, parent.document_id)
+        if (document and document.chunk_strategy.startswith("pc-")) or len(members) >= max(
+            2, math.ceil(parent.child_count * settings.rag_merge_ratio)
+        ):
+            # 新策略命中即展开父块；旧策略仍按子块覆盖比例触发合并。
             merged[key] = {
                 **members[0],
                 "content": parent.content,
@@ -231,12 +234,19 @@ def evidence_identity(workspace: str, base: str, item: dict[str, Any]) -> str:
     return "E-" + hashlib.sha256(identity.encode()).hexdigest()[:24]
 
 
-def pack_evidence(candidates: list[dict[str, Any]], characters: int) -> list[dict[str, Any]]:
+def pack_evidence(
+    candidates: list[dict[str, Any]], characters: int, *, question: str = "",
+) -> list[dict[str, Any]]:
     """按证据身份和内容去重，在有界上下文内分配连续引用标签。"""
     seen: set[str] = set()
     contents: set[str] = set()
     result: list[dict[str, Any]] = []
     remaining = characters
+    listing = any(word in question for word in ("有哪些", "列出", "名单", "列表"))
+    limit = 20 if listing else 5
+    per_source = (
+        max(1, characters // min(limit, max(1, len(candidates)))) if listing else characters
+    )
     # 同一证据和重复正文分别去重；最后一个片段可截断，并明确标注 truncated。
     for item in candidates:
         content = str(item["content"])
@@ -244,16 +254,16 @@ def pack_evidence(candidates: list[dict[str, Any]], characters: int) -> list[dic
             continue
         seen.add(item["evidence_id"])
         contents.add(content)
-        bounded = content[:remaining]
+        bounded = content[:min(remaining, per_source)]
         result.append(
             {
                 **item,
                 "content": bounded,
-                "truncated": len(bounded) < len(content),
+                "truncated": bool(item.get("truncated")) or len(bounded) < len(content),
                 "label": f"S{len(result) + 1}",
             }
         )
         remaining -= len(bounded)
-        if len(result) >= 5:
+        if len(result) >= limit:
             break
     return result

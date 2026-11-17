@@ -27,7 +27,21 @@ try {
     if ($LASTEXITCODE -ne 0) { throw '镜像构建失败，请查看上方具体下载或安装错误。' }
 
     Write-Output '第二步：启动服务并等待健康检查……'
-    docker compose up -d --wait --wait-timeout 600
+    # 已安装且可用的 CUDA 镜像应继续使用，避免普通启动将模型悄悄换回 CPU。
+    $startupComposeArgs = @('compose')
+    $cachedCudaImage = & docker image ls --filter 'reference=yugitalk-embedding:0.1.0-cuda' --quiet
+    if ($cachedCudaImage) {
+        $cudaUsable = $false
+        try {
+            & docker run --rm --gpus all --entrypoint python yugitalk-embedding:0.1.0-cuda -c 'import torch; raise SystemExit(0 if torch.cuda.is_available() else 1)' 2>$null
+            $cudaUsable = $LASTEXITCODE -eq 0
+        } catch { $cudaUsable = $false }
+        if ($cudaUsable) {
+            $startupComposeArgs += @('-f', 'docker-compose.yml', '-f', 'docker-compose.gpu.yml')
+            Write-Output '使用已安装的 CUDA 嵌入镜像。'
+        }
+    }
+    & docker @startupComposeArgs up -d --wait --wait-timeout 600
     if ($LASTEXITCODE -ne 0) {
         throw '启动失败，请执行 docker compose logs --tail 100 migrate api worker scheduler frontend 查看原因。'
     }

@@ -12,7 +12,7 @@
 - 面板异常：接口保留最近 20 条 4xx/5xx；任务展示窗口内最近 10 条失败记录；资料展示当前失败状态中最近创建的 10 项。没有采集浏览器异常到服务端。模型用量展示累计结算前 8 项。
 
 - 前端：浏览器开发者工具的 Console 中筛选 `[YugiTalk]`。成功请求为 Debug 级别，业务错误为 Warning，网络和服务异常为 Error；需要查看成功记录时开启 Debug/Verbose。前端记录目前保存在浏览器控制台，没有新增远程上报服务。
-- 后端：API、Worker、Scheduler 输出到标准日志，可按 `request_id`、`trace_id`、`operation`、`error_code` 查找。启动及查看容器日志的方式见 [启动与监控](START_AND_MONITOR.md)。
+- 后端：API、Worker、Scheduler 输出到标准日志，可按 `request_id`、`trace_id`、`operation`、`error_code` 查找。启动及查看容器日志的方式见 [启动与监控](RUNBOOK.md)。
 - 嵌入服务：独立记录 `embedding_request`、`embedding_failure`、请求编号与耗时。
 - 指标：`/internal/metrics` 沿用独立 Bearer 运维令牌保护，输出请求数、状态码、响应头耗时和已有任务、额度指标。意外 500 响应也纳入计数；流式正文耗时不等同于响应头耗时。
 - 追踪：沿用 `OTEL_EXPORTER_OTLP_ENDPOINT` 与 `OTEL_SAMPLE_RATIO` 配置。知识库索引、清理任务继承投递请求的追踪标识；模型和工具已有子步骤追踪。未配置导出地址时不向外发送追踪。
@@ -24,3 +24,20 @@ API 返回已有统一错误码和 `X-Request-ID`、`X-Trace-ID` 响应头。前
 前端捕获未处理异步错误和全局运行异常；React 渲染失败时显示重新加载入口。事件流读取失败记录错误类别，并保留原有重连规则。主动取消请求不会记成网络故障。后台任务的 `outcome=returned` 仅表示调用返回，业务结果仍以任务或文档的持久状态和错误码为准。
 
 诊断记录排除密码、令牌、提示词、上传内容、响应正文、查询参数与文件名。前端路径只保留已知资源片段，未知片段统一显示为 `:id`。
+
+
+## 正文事件合并与保护
+
+`agents/streaming.py` 的 `TextStream` 累积到 128 字符，或新片段到达时距上次发布达到 150ms，发布一批；正常或异常结束通过 finally 交付尾部。150ms 是到达片段时检查的阈值，没有额外计时器。连续三次重复 80 至 800 字符的尾段会报 `model_repetition`，窗口最多保留 2400 字符，是有界启发式保护。
+
+`run_event_limit` 默认每 Run 1000 条事件，限制的是事件数，不是正文字符或 Token。终态预留事件位置；合并可以降低事件压力，但极慢碎片仍可能触顶。引用校验在正文结束后执行，因此失败任务保留的部分正文不能当作通过校验的答案。
+
+## SSE 游标与断线
+
+`tasks/router.py` 的 events 从 SQL 回读公开事件。客户端可用 types 过滤，但 completed、error、clarification、checkpoint_restored、run_state 不可过滤；过滤掉的事件仍推进原始序号，必要时发送 cursor 帧。
+
+`frontend/src/tasks/api.ts` 保存 cursor 的序号而不把它当正文，重连使用 Last-Event-ID 并按序号去重。断线只补读已有事件，不重新执行已经失败或触顶的任务。通知和准入机制见 [CONCURRENCY](CONCURRENCY.md)。
+
+前端 `ProcessSummary.tsx` 的 `appendProcessEvent()` 对同名文案去重，只影响简略展示，完整多轮信息仍在后端。steering_queued 说明插话已接收，steering_applied 说明已进入检查点消息，不等于模型已成功完成新要求。
+
+相关回归：`test_answer_boundaries.py`、`test_streaming_storage.py`、`test_event_notifications.py`、`test_steering.py` 以及前端 `tasks/api.test.ts` 和 `chat/process-render.test.tsx`。运行测试的结果需要单独记录，不因存在测试文件就声明当前环境通过。

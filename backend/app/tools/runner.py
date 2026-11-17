@@ -1,17 +1,22 @@
-"""受控的只读工具执行入口，不执行动态代码或外部写入。"""
+"""本地内置工具分发；HTTP 和 MCP 由任务执行层分流到各自运行模块。"""
 
-from app.tools.contracts import Report, TextStats
+from pathlib import Path
+
+from app.providers.client import ProviderFailure
+from app.tools.builtin.files import read_files
+from app.tools.builtin.text import format_report, text_stats
 
 
-def execute_tool(name: str, arguments: object) -> dict[str, object]:
-    """注册表只允许固定工具，不使用 eval、Shell 或动态模块导入。"""
+def execute_tool(
+    name: str, arguments: object, *, workspace: Path | None = None
+) -> dict[str, object]:
+    """仅分发固定内置工具，文件根目录必须由已鉴权的执行层传入。"""
     if name == "text_stats":
-        data = TextStats.model_validate(arguments)
-        return {
-            "characters": len(data.text),
-            "lines": len([line for line in data.text.splitlines() if line.strip()]),
-        }
+        return text_stats(arguments)
     if name == "format_report":
-        report = Report.model_validate(arguments)
-        return {"markdown": f"# {report.title}\n\n{report.body}"}
+        return format_report(arguments)
+    if name == "read_files":
+        if workspace is None:
+            raise ProviderFailure("workspace_not_configured")
+        return read_files(arguments, workspace)
     raise ValueError("工具未注册")

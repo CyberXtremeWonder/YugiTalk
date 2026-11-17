@@ -1,0 +1,29 @@
+.editor-dialog {
+  width: min(760px, calc(100vw - 32px));
+  margin: 0;
+  overscroll-behavior-y: contain;
+}
+
+.editor-dialog-heading {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.editor-dialog .account-settings {
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.editor-dialog form {
+  display: grid;
+  gap: 12px;
+}
+
+.editor-placeholder {
+  padding: 20px;
+  color: var(--muted);
+}

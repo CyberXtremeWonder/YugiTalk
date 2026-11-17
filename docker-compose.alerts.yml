@@ -1,0 +1,39 @@
+# 可选邮件告警：在生产两个Compose文件之后叠加；先按docs/ALERTING.md生成私有配置。
+services:
+  prometheus:
+    volumes:
+      - type: bind
+        source: ./${PROD_DATA_ROOT:-data/production}/config/prometheus-alerting.yaml
+        target: /etc/prometheus/prometheus.yml
+        read_only: true
+        bind: {create_host_path: false}
+  alertmanager:
+    image: prom/alertmanager:v0.34.2@sha256:39d8bb3966c694a124428a3a88fbcffd40bd069129ecd47c059f8a3f17c55f3b
+    command: [--config.file=/etc/alertmanager/alertmanager.json, --storage.path=/alertmanager, --data.retention=120h, --cluster.listen-address=, --log.level=warn]
+    user: "65534:65534"
+    # private接收Prometheus告警，default仅用于访问外部SMTP；不发布任何宿主端口。
+    networks: [default, private]
+    volumes:
+      - type: bind
+        source: ./${PROD_DATA_ROOT:-data/production}/config/alertmanager.json
+        target: /etc/alertmanager/alertmanager.json
+        read_only: true
+        bind: {create_host_path: false}
+      - alertmanager_data:/alertmanager
+    restart: unless-stopped
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 128m
+    cpus: 0.25
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, "http://127.0.0.1:9093/-/ready"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+volumes:
+  alertmanager_data:

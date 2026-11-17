@@ -11,7 +11,7 @@ from app.agents.contracts import AgentConfig, effective_config
 from app.agents.model_config import cipher, public_config
 from app.agents.models import Agent, AgentVersion
 from app.audit.service import audit
-from app.core.config import Settings
+from app.core.config import Settings, model_url_allowed
 from app.core.pagination import Limit, page
 from app.identity.dependencies import DB, Actor, Writer
 from app.tools.registry import TOOL_SCHEMAS
@@ -95,10 +95,8 @@ def publish(
             raise HTTPException(422, detail="请填写模型名称")
         config.update({"provider": data.provider, "model": data.model, "base_url": data.base_url})
         if data.provider != "mock":
-            if not data.base_url or (
-                settings.app_env != "test" and not data.base_url.startswith("https://")
-            ):
-                raise HTTPException(422, detail="请填写 HTTPS 模型 URL")
+            if not model_url_allowed(data.base_url, settings.app_env):
+                raise HTTPException(422, detail={"code": "model_url_requires_https"})
             key = data.api_key.get_secret_value().strip()
             previous = db.scalar(
                 select(AgentVersion).where(AgentVersion.agent_id == agent.id)

@@ -1,22 +1,24 @@
-import { Sources } from "../rag/Sources";
 import { Fragment, useEffect, useRef, useState } from "react";
-import { SafeMarkdown } from "./SafeMarkdown";
-import { withoutSourceLabels } from "../rag/presentation";
 import { prompts } from "../shared/views";
 import { allItems, identityRequest, type Identity } from "../identity/api";
-import { type Account } from "../accounts/api";
-import { readEvents, type Run } from "../tasks/api";
-import { type Agent } from "../agents/api";
-import { type Message } from "./api";
-import { ProcessSummary, processStep } from "./ProcessSummary";
-import type { RunEvent } from "../tasks/api";
-import { runError } from "../tasks/errors";
+import type { Account } from "../accounts/api";
+import type { Run } from "../tasks/api";
+import type { Agent } from "../agents/api";
 import type { Skill } from "../skills/api";
+import type { Message } from "./api";
+import { ChatTask, activeTask } from "./ChatTask";
+import { SafeMarkdown } from "./SafeMarkdown";
+import { Attachments } from "./Attachments";
+import { Sources } from "../rag/Sources";
+import { uploadChatFile, type ChatFile } from "./uploads";
+import "./uploads.css";
 
-/** 管理对话历史、任务流式回复、停止生成及知识库来源。 */
+/** 对话允许多个后台任务；输入提交状态与各任务的执行状态分别维护。 */
 export function ChatView({
   value,
   onChange,
+  agentVersion = "",
+  onAgentVersion,
   identity,
   conversationId,
   onConversation,
@@ -24,6 +26,8 @@ export function ChatView({
 }: {
   value: string;
   onChange: (value: string) => void;
+  agentVersion?: string;
+  onAgentVersion?: (version: string) => void;
   identity: Identity;
   account: Account;
   conversationId: string | null;
@@ -31,141 +35,106 @@ export function ChatView({
   onRun: (run: Run | null) => void;
 }) {
   const input = useRef<HTMLTextAreaElement>(null);
-  const controller = useRef<AbortController | null>(null);
+  const fileInput = useRef<HTMLInputElement>(null);
+  const [files, setFiles] = useState<ChatFile[]>([]);
+  const [uploading, setUploading] = useState(false);
   const alive = useRef(true);
-  // 保留尚未确认成功的提交内容和幂等键；网络失败后重发时，服务端可返回同一个任务。
+  const sending = useRef(false);
+  const draft = useRef(value);
+  draft.current = value;
   const pending = useRef<{
     key: string;
     conversation: string;
     version: string;
     message: string;
     skill: string;
+    files: string;
   } | null>(null);
-  const [skills, setSkills] = useState<Skill[]>([]);
-  const [skill, setSkill] = useState("");
-  const [agents, setAgents] = useState<Agent[]>([]);
-  const [version, setVersion] = useState("");
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [run, setRun] = useState<Run | null>(null);
-  const [answer, setAnswer] = useState("");
-  const [status, setStatus] = useState("");
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [steps, setSteps] = useState<string[]>([]);
   const clarifyKey = useRef<{
     answer: string;
     key: string;
     version: number;
   } | null>(null);
-  /** 同一任务的每个公开阶段只展示一次，完整多轮记录保留在服务端轨迹中。 */
-  function recordStep(event: RunEvent) {
-    const step = processStep(event);
-    if (step)
-      setSteps((previous) =>
-        previous.includes(step) ? previous : [...previous, step],
-      );
-  }
+  const steerKey = useRef<{ run: string; message: string; key: string } | null>(
+    null,
+  );
+  const [steeringTarget, setSteeringTarget] = useState("auto");
+  const historyRequest = useRef(0);
+  const [skills, setSkills] = useState<Skill[]>([]);
+  const [skill, setSkill] = useState("");
+  const [agents, setAgents] = useState<Agent[]>([]);
+  const [version, setVersion] = useState(agentVersion);
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [runs, setRuns] = useState<Run[]>([]);
+  const [clarification, setClarification] = useState<Run | null>(null);
+  const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [controlling, setControlling] = useState(false);
+  const controlPending = useRef(false);
+  const [loading, setLoading] = useState(true);
   const scroll = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    onRun(run);
-  }, [run, onRun]);
-  /** 读取已保存的消息和任务，恢复当前对话的可见状态。 */
+  const steerable = runs.filter(
+    (task) => activeTask(task) && task.steering_supported !== false,
+  );
+  const steeringTask =
+    clarification || steeringTarget === "new"
+      ? null
+      : steeringTarget === "auto"
+        ? steerable.at(-1)
+        : steerable.find((task) => task.id === steeringTarget);
+
   async function history(id: string) {
+    const serial = ++historyRequest.current;
     const rows = await allItems<Message>(`/conversations/${id}/messages`);
-    if (alive.current) setMessages(rows);
+    if (alive.current && serial === historyRequest.current) setMessages(rows);
   }
-  /** 监听任务公开事件并更新文本、流程及完成状态。 */
-  async function watch(task: Run, id: string) {
-    // 一个页面只读取一个任务的事件。停止旧读取不会取消服务端的后台执行。
-    controller.current?.abort();
-    const reader = new AbortController();
-    controller.current = reader;
-    setRun(task);
-    setBusy(true);
-    // 历史回复以任务 ID 作为消息 ID；重放事件前移除它，避免与临时 answer 显示两份。
-    setMessages((previous) =>
-      previous.filter((message) => message.id !== task.id),
+
+  function updateTask(task: Run) {
+    if (!alive.current) return;
+    setRuns((previous) =>
+      previous.some((r) => r.id === task.id)
+        ? previous.map((r) =>
+            r.id === task.id &&
+            (task.event_sequence || 0) >= (r.event_sequence || 0)
+              ? task
+              : r,
+          )
+        : [...previous, task],
     );
-    setAnswer("");
-    setError("");
-    setSteps([]);
-    try {
-      await readEvents(task, reader.signal, (event) => {
-        if (!alive.current) return;
-        recordStep(event);
-        // 恢复检查点时覆盖临时文本，平常收到 text_delta 时才追加。
-        // 中断前显示过的片段未必已进入检查点，直接追加会造成重复回复。
-        if (event.type === "checkpoint_restored") {
-          setAnswer(event.payload.text || "");
-          setError("");
-          setRun((previous) =>
-            previous ? { ...previous, status: "running" } : previous,
-          );
-        }
-        if (event.type === "completed") setError("");
-        if (event.type === "text_delta")
-          setAnswer((previous) => previous + (event.payload.text || ""));
-        if (event.type === "tool_status") {
-          if (event.payload.stage === "running")
-            setRun((previous) =>
-              previous ? { ...previous, status: "running" } : previous,
-            );
-          setStatus(
-            event.payload.name
-              ? `工具：${event.payload.name} · ${event.payload.status}`
-              : "正在处理任务…",
-          );
-        }
-        if (event.type === "error")
-          setError(runError(event.payload.error_code || "执行失败"));
-      });
-      if (reader.signal.aborted || !alive.current) return;
-      // 事件读取结束后，以服务端任务状态和持久化消息为准，再清空临时流式文本。
-      // 结束也可能代表失败、取消或等待补充信息，不一定是成功。
-      const result = await identityRequest<Run>(`/runs/${task.id}`);
-      await history(id);
-      setRun(result);
-      setAnswer("");
-      setStatus(
-        result.status === "waiting_input"
-          ? "请补充信息后继续"
-          : result.status === "succeeded"
-            ? "任务完成"
-            : "任务已结束",
-      );
-    } catch (failure) {
-      if (!reader.signal.aborted && alive.current)
-        setError(
-          failure instanceof Error
-            ? failure.message
-            : "连接中断，请重新打开会话。",
-        );
-    } finally {
-      if (!reader.signal.aborted && alive.current) setBusy(false);
-    }
+    setClarification((selected) =>
+      selected?.id === task.id ? task : selected,
+    );
   }
+
+  useEffect(() => {
+    onRun(runs.at(-1) || null);
+  }, [runs, onRun]);
+
   useEffect(() => {
     alive.current = true;
-    void allItems<Agent>(`/me/agents`)
+    void allItems<Agent>("/me/agents")
       .then((rows) => {
         if (alive.current) {
           setAgents(rows);
-          setVersion(rows[0]?.version_id || "");
+          // 功能切换会重新挂载；优先使用工作台保留的选择，只在已不可用时回退。
+          const selected = rows.some((row) => row.version_id === agentVersion)
+            ? agentVersion
+            : rows[0]?.version_id || "";
+          setVersion(selected);
+          onAgentVersion?.(selected);
         }
       })
       .catch((failure) => {
         if (alive.current) setError(failure.message);
       });
-    void allItems<Skill>(`/me/skills`)
+    void allItems<Skill>("/me/skills")
       .then((rows) => {
         if (alive.current) setSkills(rows);
       })
       .catch(() => {
-        /* 技能目录加载失败时保留不使用 Skill 的普通对话。 */
+        /* 技能列表失败不阻断普通对话。 */
       });
-    /** 加载当前页面所需的授权资源，丢弃过期请求结果。 */
-    const load = async () => {
+    void (async () => {
       try {
         if (conversationId) {
           await history(conversationId);
@@ -173,31 +142,8 @@ export function ChatView({
             `/conversations/${conversationId}/runs`,
           );
           if (!alive.current) return;
-          const latest = page.items[0];
-          if (latest) {
-            setRun(latest);
-            setSkill(latest.skill?.version_id || "");
-            if (["queued", "running"].includes(latest.status))
-              void watch(latest, conversationId);
-            else {
-              setStatus(
-                latest.status === "waiting_input"
-                  ? "请补充信息后继续"
-                  : latest.status === "succeeded"
-                    ? "任务完成"
-                    : "任务已结束",
-              );
-              if (latest.error_code) setError(runError(latest.error_code));
-              // 历史会话仅重读流程事件；已经保存的答复不重复拼接。
-              const replay = new AbortController();
-              controller.current = replay;
-              void readEvents(latest, replay.signal, (event) => {
-                if (alive.current) recordStep(event);
-              }).catch(() => {
-                /* 过期的流程日志不影响已保存消息的阅读。 */
-              });
-            }
-          }
+          setRuns([...page.items].reverse());
+          setSkill(page.items[0]?.skill?.version_id || "");
         }
       } catch (failure) {
         if (alive.current)
@@ -205,116 +151,223 @@ export function ChatView({
       } finally {
         if (alive.current) setLoading(false);
       }
-    };
-    void load();
+    })();
     return () => {
       alive.current = false;
-      controller.current?.abort();
     };
-    // 按空间与会话重新挂载；离开页面只断开读取，服务端任务仍可从历史恢复查看。
+    // App 按会话重新挂载，离开只断开监听，后台任务继续执行。
   }, []);
+
   useEffect(() => {
     scroll.current?.scrollTo({
       top: scroll.current.scrollHeight,
       behavior: "smooth",
     });
-  }, [messages, answer]);
-  /** 校验输入后提交幂等任务，并开始消费流式回复。 */
+  }, [messages]);
+
+  function selectClarification(task: Run, answer?: string) {
+    steerKey.current = null;
+    setClarification(task);
+    if (answer !== undefined) onChange(answer);
+    setError("");
+    input.current?.focus();
+  }
+
   async function send() {
-    if (busy || !value.trim() || (!version && run?.status !== "waiting_input"))
-      return;
-    if (run?.status === "waiting_input") {
-      // 知识检索需要澄清时，输入用于恢复原任务；state_version 防止回答过期的问题。
-      setBusy(true);
-      setError("");
-      try {
-        if (
-          !clarifyKey.current ||
-          clarifyKey.current.answer !== value ||
-          clarifyKey.current.version !== run.state_version
-        )
-          clarifyKey.current = {
-            answer: value,
-            key: crypto.randomUUID(),
-            version: run.state_version || 0,
-          };
-        const task = await identityRequest<Run>(
-          `/runs/${run.id}/clarify`,
-          "POST",
-          { answer: value, state_version: clarifyKey.current.version },
-          identity.csrf_token,
-          { "Idempotency-Key": clarifyKey.current.key },
-        );
-        clarifyKey.current = null;
-        onChange("");
-        await history(conversationId!);
-        void watch(task, conversationId!);
-      } catch (failure) {
-        setError(failure instanceof Error ? failure.message : "补充信息失败");
-        setBusy(false);
-      }
+    if (
+      !clarification &&
+      !["auto", "new"].includes(steeringTarget) &&
+      !steeringTask &&
+      steerKey.current?.message !== value
+    ) {
+      setError("所选任务已结束，请选择其他插话目标或新任务。");
       return;
     }
-    setBusy(true);
-    // 新任务确认前清除旧运行，停止按钮不能误取消上一轮任务。
-    setRun(null);
-    setStatus("正在提交任务…");
-    setSteps([]);
+    if (steeringTask && files.length) {
+      setError("插话仅支持文字；发送附件请先选择新任务。");
+      return;
+    }
+    if (clarification && files.length) {
+      setError("附件请作为新消息发送，请先取消补充目标。");
+      return;
+    }
+    if (
+      sending.current ||
+      uploading ||
+      (!value.trim() && !files.length) ||
+      (!version && !clarification && !steeringTask && steerKey.current?.message !== value)
+    )
+      return;
+    sending.current = true;
+    setSubmitting(true);
     setError("");
+    const text = value.trim() ? value : "请阅读并分析附件中的内容。";
     try {
-      // 首次发送先创建会话，再把消息提交为后台任务；重发优先使用上次创建的会话。
       let id = pending.current?.conversation || conversationId;
       if (!id)
         id = (
           await identityRequest<{ id: string }>(
-            `/me/conversations`,
+            "/me/conversations",
             "POST",
-            { title: value.trim().slice(0, 60) },
+            { title: text.trim().slice(0, 60) },
             identity.csrf_token,
           )
         ).id;
-      // 不确定网络结果复用幂等键，防止重复创建任务与扣额。
+      let task: Run;
       if (
-        !pending.current ||
-        pending.current.message !== value ||
-        pending.current.version !== version ||
-        pending.current.skill !== skill
-      )
-        pending.current = {
-          key: crypto.randomUUID(),
-          conversation: id,
-          version,
-          message: value,
-          skill,
-        };
-      const request = pending.current;
-      const task = await identityRequest<Run>(
-        "/runs",
-        "POST",
-        {
-          conversation_id: request.conversation,
-          agent_version_id: request.version,
-          message: request.message,
-          skill_version_id: request.skill || null,
-        },
-        identity.csrf_token,
-        { "Idempotency-Key": request.key },
-      );
-      pending.current = null;
-      onChange("");
-      if (conversationId !== request.conversation) {
-        // 切换到新会话后由组件加载逻辑接管 watch，当前实例不再另开一次读取。
-        onConversation(request.conversation);
+        steeringTask ||
+        (!clarification &&
+          steerKey.current?.message === text &&
+          steeringTarget !== "new")
+      ) {
+        const target = steerKey.current?.message === text
+          ? steerKey.current.run
+          : steeringTask!.id;
+        if (
+          steerKey.current?.run !== target ||
+          steerKey.current.message !== text
+        )
+          steerKey.current = {
+            run: target,
+            message: text,
+            key: crypto.randomUUID(),
+          };
+        task = await identityRequest<Run>(
+          `/runs/${target}/steer`,
+          "POST",
+          { message: text },
+          identity.csrf_token,
+          { "Idempotency-Key": steerKey.current!.key },
+        );
+        steerKey.current = null;
+      } else if (clarification?.status === "waiting_input") {
+        if (
+          !clarifyKey.current ||
+          clarifyKey.current.answer !== text ||
+          clarifyKey.current.version !== clarification.state_version
+        )
+          clarifyKey.current = {
+            answer: text,
+            key: crypto.randomUUID(),
+            version: clarification.state_version || 0,
+          };
+        task = await identityRequest<Run>(
+          `/runs/${clarification.id}/clarify`,
+          "POST",
+          { answer: text, state_version: clarifyKey.current.version },
+          identity.csrf_token,
+          { "Idempotency-Key": clarifyKey.current.key },
+        );
+        clarifyKey.current = null;
+      } else {
+        if (
+          !pending.current ||
+          pending.current.message !== text ||
+          pending.current.version !== version ||
+          pending.current.skill !== skill ||
+          pending.current.files !== JSON.stringify(files)
+        )
+          pending.current = {
+            key: crypto.randomUUID(),
+            conversation: id,
+            version,
+            message: text,
+            skill,
+            files: JSON.stringify(files),
+          };
+        const request = pending.current;
+        task = await identityRequest<Run>(
+          "/runs",
+          "POST",
+          {
+            conversation_id: request.conversation,
+            agent_version_id: request.version,
+            message: request.message,
+            skill_version_id: request.skill || null,
+            uploaded_files: JSON.parse(request.files),
+          },
+          identity.csrf_token,
+          { "Idempotency-Key": request.key },
+        );
+        pending.current = null;
+      }
+      if (!alive.current) return;
+      setFiles([]);
+      if (draft.current === text || !draft.current.trim()) onChange("");
+      setClarification(null);
+      if (conversationId !== id) {
+        onConversation(id);
         return;
       }
-      await history(request.conversation);
-      void watch(task, request.conversation);
+      await history(id);
+      updateTask(task);
     } catch (failure) {
-      setError(failure instanceof Error ? failure.message : "发送失败");
-      setStatus("");
-      setBusy(false);
+      const reason = failure instanceof Error ? failure.message : "发送失败";
+      setError(reason);
+    } finally {
+      sending.current = false;
+      if (alive.current) setSubmitting(false);
     }
   }
+
+  /** 暂停、继续与停止都作用于指定任务，正文输入和附件保持不变。 */
+  async function controlTask(task: Run, action: "pause" | "resume" | "cancel") {
+    if (controlPending.current) return;
+    controlPending.current = true;
+    setControlling(true);
+    setError("");
+    try {
+      const result = await identityRequest<Run>(
+        `/runs/${task.id}/${action}`,
+        "POST",
+        undefined,
+        identity.csrf_token,
+      );
+      if (!alive.current) return;
+      if (action === "cancel" && conversationId) {
+        try {
+          await history(conversationId);
+        } finally {
+          updateTask(result);
+        }
+      } else updateTask(result);
+    } catch (failure) {
+      if (alive.current)
+        setError(
+          failure instanceof Error ? failure.message : "任务控制失败，请重试。",
+        );
+    } finally {
+      controlPending.current = false;
+      if (alive.current) setControlling(false);
+    }
+  }
+
+  const replies = new Map(
+    messages.filter((m) => m.role === "assistant").map((m) => [m.id, m]),
+  );
+  const taskIds = new Set(runs.map((r) => r.id));
+  const origins = new Map(runs.map((r) => [r.message_sequence, r]));
+  const attached = new Set<string>();
+  const current = runs.at(-1);
+  const controlledTask = runs.filter(activeTask).at(-1);
+
+  function taskView(task: Run) {
+    attached.add(task.id);
+    return (
+      <ChatTask
+        key={task.id}
+        task={task}
+        message={replies.get(task.id)}
+        onControl={controlTask}
+        controlling={controlling}
+        onTask={updateTask}
+        onHistory={() => history(conversationId!)}
+        onClarification={selectClarification}
+        replay={task.id === runs.at(-1)?.id}
+      />
+    );
+  }
+
   return (
     <section
       className={`chat-view ${messages.length ? "has-messages" : ""}`}
@@ -341,44 +394,44 @@ export function ChatView({
               当前对话
             </h1>
             <div className="message-list" ref={scroll} aria-label="对话消息">
-              {messages.map((message, index) => (
-                <Fragment key={message.id}>
-                  {!busy &&
-                    index === messages.length - 1 &&
-                    message.role === "assistant" && (
-                      <ProcessSummary steps={steps} busy={false} />
-                    )}
-                  <article className={`message ${message.role}`}>
-                    <strong>
-                      {message.role === "user" ? "你" : "YugiTalk"}
-                    </strong>
-                    <SafeMarkdown>
-                      {message.role === "assistant" && message.sources?.length
-                        ? withoutSourceLabels(message.content)
-                        : message.content}
-                    </SafeMarkdown>
-                    <Sources sources={message.sources || []} />
-                  </article>
-                </Fragment>
-              ))}
-              {(busy || messages.at(-1)?.role !== "assistant") && (
-                <ProcessSummary steps={steps} busy={busy} />
-              )}
-              {answer && (
-                <article className="message assistant">
-                  <strong>YugiTalk · 生成中</strong>
-                  <SafeMarkdown>
-                    {run?.knowledge_base_id
-                      ? withoutSourceLabels(answer, busy)
-                      : answer}
-                  </SafeMarkdown>
-                </article>
-              )}
+              {messages.map((message) => {
+                if (message.role === "assistant" && taskIds.has(message.id))
+                  return null;
+                const task =
+                  message.role === "user"
+                    ? runs.find((r) => r.id === message.run_id) ||
+                      origins.get(message.sequence)
+                    : undefined;
+                return (
+                  <Fragment key={message.id}>
+                    <article className={`message ${message.role}`}>
+                      <strong>
+                        {message.role === "user" ? "你" : "YugiTalk"}
+                      </strong>
+                      <SafeMarkdown>{message.content}</SafeMarkdown>
+                      {!!message.uploaded_files?.length && (
+                        <ul
+                          className="chat-upload-list"
+                          aria-label="已发送附件"
+                        >
+                          {message.uploaded_files.map((file, index) => (
+                            <li key={index}>
+                              {file.filename}
+                              {file.truncated ? "（文本已截取）" : ""}
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                      <Sources sources={message.sources || []} />
+                      <Attachments files={message.attachments || []} />
+                    </article>
+                    {task && taskView(task)}
+                  </Fragment>
+                );
+              })}
+              {runs.filter((r) => !attached.has(r.id)).map(taskView)}
             </div>
           </>
-        )}
-        {!messages.length && busy && (
-          <ProcessSummary steps={steps} busy={busy} />
         )}
         {!messages.length && (
           <div className="quick-actions" aria-label="任务灵感">
@@ -403,31 +456,45 @@ export function ChatView({
         )}
       </div>
       <div className="chat-bottom">
-        {run?.status === "waiting_input" && run.clarification && (
-          <aside className="rag-clarification" aria-label="补充信息">
-            <p>{run.clarification.prompt}</p>
-            {run.clarification.options.map((option) => (
-              <button key={option} onClick={() => onChange(option)}>
-                {option}
-              </button>
-            ))}
+        {clarification && (
+          <aside className="task-clarification" aria-label="补充目标">
+            <span>
+              补充信息：
+              {clarification.prompt_preview || "当前任务"}
+            </span>
             <button
-              onClick={() => {
-                void identityRequest<Run>(
-                  `/runs/${run.id}/cancel`,
-                  "POST",
-                  undefined,
-                  identity.csrf_token,
-                )
-                  .then(setRun)
-                  .catch((failure) => setError(failure.message));
-              }}
+              onClick={() => setClarification(null)}
+              aria-label="取消补充目标"
             >
-              取消本次问答
+              ×
             </button>
           </aside>
         )}
         <div className="composer">
+          {files.length > 0 && (
+            <ul className="chat-upload-list" aria-label="待发送附件">
+              {files.map((file, index) => (
+                <li key={index}>
+                  <span title={file.filename}>
+                    {file.filename}
+                    {file.truncated ? "（正文较长，仅发送前 60 KB 文本）" : ""}
+                  </span>
+                  <button
+                    type="button"
+                    aria-label={`移除 ${file.filename}`}
+                    disabled={submitting}
+                    onClick={() =>
+                      setFiles((previous) =>
+                        previous.filter((_, i) => i !== index),
+                      )
+                    }
+                  >
+                    ×
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
           <label className="sr-only" htmlFor="prompt">
             任务输入
           </label>
@@ -438,9 +505,13 @@ export function ChatView({
             value={value}
             onChange={(event) => onChange(event.target.value)}
             placeholder={
-              run?.status === "waiting_input"
+              clarification
                 ? "补充信息，继续本次问答…"
-                : "把你的想法交给 YugiTalk…"
+                : steeringTask
+                  ? steeringTask.status === "paused"
+                    ? "补充指令，继续思考后生效…"
+                    : "插话给当前任务，下一次模型调用前生效…"
+                  : "把你的想法交给 YugiTalk…"
             }
             onKeyDown={(event) => {
               if (
@@ -454,30 +525,94 @@ export function ChatView({
             }}
           />
           <div className="composer-bottom">
+            <input
+              ref={fileInput}
+              type="file"
+              multiple
+              className="sr-only"
+              aria-label="选择对话附件"
+              accept=".docx,.pdf,.txt,.md,.csv,.json,.log,.rst"
+              disabled={uploading || submitting || !!clarification}
+              onChange={async (event) => {
+                const chosen = Array.from(event.target.files || []);
+                event.target.value = "";
+                if (!chosen.length) return;
+                if (files.length + chosen.length > 3) {
+                  setError("每条消息最多添加 3 个附件。");
+                  return;
+                }
+                setUploading(true);
+                setError("");
+                try {
+                  const parsed: ChatFile[] = [];
+                  for (const file of chosen)
+                    parsed.push(
+                      await uploadChatFile(file, identity.csrf_token),
+                    );
+                  if (
+                    files.reduce(
+                      (sum, f) => sum + new TextEncoder().encode(f.text).length,
+                      0,
+                    ) +
+                      parsed.reduce(
+                        (sum, f) =>
+                          sum + new TextEncoder().encode(f.text).length,
+                        0,
+                      ) >
+                    90000
+                  )
+                    throw new Error(
+                      "附件文本总计超过 90 KB，请分多条消息发送。",
+                    );
+                  if (alive.current)
+                    setFiles((previous) => [...previous, ...parsed]);
+                } catch (failure) {
+                  if (alive.current)
+                    setError(
+                      failure instanceof Error
+                        ? failure.message
+                        : "上传失败，请重试。",
+                    );
+                } finally {
+                  if (alive.current) setUploading(false);
+                }
+              }}
+            />
+            <button
+              className="chat-upload-button"
+              type="button"
+              title="上传 Word、PDF、TXT 等文本文件"
+              aria-label="上传文件"
+              disabled={
+                uploading || submitting || !!clarification || files.length >= 3
+              }
+              onClick={() => fileInput.current?.click()}
+            >
+              <span aria-hidden="true">＋</span>
+              <span>{uploading ? "解析中…" : "上传文件"}</span>
+            </button>
             <label className="skill-context">
               <span className="sr-only">对话 Skill</span>
               <select
                 aria-label="对话 Skill"
                 value={skill}
-                disabled={busy || run?.status === "waiting_input"}
+                disabled={submitting || !!clarification}
                 onChange={(event) => setSkill(event.target.value)}
               >
                 <option value="">不使用 Skill</option>
-                {run?.skill &&
+                {current?.skill &&
                   !skills.some(
-                    (row) =>
-                      row.enabled && row.version_id === run.skill?.version_id,
-                  ) &&
-                  skill === run.skill.version_id && (
-                    <option value={run.skill.version_id}>
-                      {run.skill.name} · v{run.skill.number}（历史版本）
+                    (s) => s.version_id === current.skill?.version_id,
+                  ) && (
+                    <option value={current.skill.version_id}>
+                      {current.skill.name} · v{current.skill.number}（历史版本）
                     </option>
                   )}
                 {skills
-                  .filter((row) => row.enabled)
-                  .map((row) => (
-                    <option key={row.id} value={row.version_id}>
-                      {row.name} · v{row.number}
+                  .filter((s) => s.enabled)
+                  .map((s) => (
+                    <option key={s.id} value={s.version_id}>
+                      {s.name} · v{s.number}
                     </option>
                   ))}
               </select>
@@ -487,8 +622,11 @@ export function ChatView({
               <select
                 aria-label="选择助手"
                 value={version}
-                onChange={(event) => setVersion(event.target.value)}
-                disabled={busy}
+                onChange={(event) => {
+                  setVersion(event.target.value);
+                  onAgentVersion?.(event.target.value);
+                }}
+                disabled={submitting || !!clarification}
               >
                 {!agents.length && (
                   <option value="">请先在 Agent 页创建助手</option>
@@ -500,63 +638,96 @@ export function ChatView({
                 ))}
               </select>
             </label>
-            {busy ? (
+            <div className="composer-controls">
+              {steerable.length > 0 && !clarification && (
+                <select
+                  className="steering-target"
+                  aria-label="消息目标"
+                  value={steeringTarget}
+                  disabled={submitting}
+                  onChange={(event) => {
+                    setSteeringTarget(event.target.value);
+                    steerKey.current = null;
+                  }}
+                >
+                  <option value="auto">插话给最近任务</option>
+                  {steerable.map((task) => (
+                    <option key={task.id} value={task.id}>
+                      插话：{task.prompt_preview || task.id.slice(0, 8)}
+                    </option>
+                  ))}
+                  <option value="new">发送新任务</option>
+                </select>
+              )}
+              {controlledTask && (
+                <button
+                  type="button"
+                  className="pause-thinking"
+                  disabled={controlling}
+                  onClick={() =>
+                    void controlTask(
+                      controlledTask,
+                      controlledTask.status === "paused" ? "resume" : "pause",
+                    )
+                  }
+                >
+                  {controlledTask.status === "paused" ? "继续思考" : "暂停思考"}
+                </button>
+              )}
+              {controlledTask && (
+                <button
+                  type="button"
+                  className="pause-thinking"
+                  aria-label="停止思考"
+                  title="停止思考"
+                  disabled={controlling}
+                  onClick={() => void controlTask(controlledTask, "cancel")}
+                >
+                  ■
+                </button>
+              )}
               <button
-                className="stop-task"
-                aria-label="停止生成"
-                title={run ? "停止生成" : "正在提交任务…"}
-                disabled={!run}
-                onClick={() => {
-                  // 任务确认前只显示处理图标，避免取消上一轮或不存在的运行。
-                  if (!run) return;
-                  void identityRequest<Run>(
-                    `/runs/${run.id}/cancel`,
-                    "POST",
-                    undefined,
-                    identity.csrf_token,
-                  )
-                    .then((result) => {
-                      setRun(result);
-                      setStatus("任务已停止");
-                    })
-                    .catch((failure) => setError(failure.message));
-                }}
-              >
-                <span className="stop-square" aria-hidden="true" />
-              </button>
-            ) : (
-              <button
+                type="button"
                 className="send"
                 disabled={
                   loading ||
-                  busy ||
-                  (!version && run?.status !== "waiting_input") ||
-                  !value.trim()
+                  submitting ||
+                  uploading ||
+                  (!version && !clarification && !steeringTask) ||
+                  (!value.trim() && !files.length)
                 }
-                aria-label={version ? "发送任务" : "发送任务，请先创建助手"}
+                aria-label={
+                  steeringTask
+                    ? "发送插话"
+                    : version
+                      ? "发送任务"
+                      : "发送任务，请先创建助手"
+                }
+                title={steeringTask ? "发送插话" : "发送任务"}
                 onClick={() => void send()}
               >
                 <span aria-hidden="true">↑</span>
               </button>
-            )}
+            </div>
           </div>
         </div>
-        {error && (
-          <p role="alert">
-            {error}
-            {run && ["queued", "running"].includes(run.status) && !busy && (
-              <button onClick={() => void watch(run, conversationId!)}>
-                重新连接
-              </button>
-            )}
-          </p>
-        )}
+        {error && <p role="alert">{error}</p>}
         <p className="run-status" role="status">
-          {status}
-          {run &&
-            ` · ${run.provider}/${run.model} · 估算用量 ${run.charged_tokens} · 输入/输出 Token ${run.input_tokens ?? "未知"}/${run.output_tokens ?? "未知"}`}
+          {submitting
+            ? "正在提交…"
+            : controlledTask?.status === "paused"
+              ? "已暂停思考"
+              : runs.some(activeTask)
+                ? `${runs.filter((task) => activeTask(task) && task.status !== "paused").length} 个任务正在处理`
+                : current?.status === "succeeded"
+                  ? "任务完成"
+                  : ""}
+          {current &&
+            ` · ${current.provider}/${current.model} · 估算用量 ${current.charged_tokens} · 输入/输出 Token ${current.input_tokens ?? "未知"}/${current.output_tokens ?? "未知"}`}
         </p>
-        <p className="input-hint">Enter 发送 · Shift + Enter 换行</p>
+        <p className="input-hint">
+          Enter 发送 · Shift + Enter 换行 · 附件最多 3 个，单个 20 MiB
+        </p>
       </div>
     </section>
   );

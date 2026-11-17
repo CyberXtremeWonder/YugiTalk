@@ -100,6 +100,7 @@ def main() -> int:
             host=settings.app_host,
             port=settings.app_port,
             reload=settings.app_reload,
+            workers=settings.app_workers,
             loop="app.core.event_loop:selector_loop_factory" if sys.platform == "win32" else "auto",
             timeout_graceful_shutdown=20,
             access_log=False,

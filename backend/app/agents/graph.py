@@ -14,12 +14,23 @@ from app.agents.streaming import TextStream
 from app.core.config import Settings
 from app.guardrails.prompts import protect_messages
 from app.observability.telemetry import operation_span
-from app.observability.traces import Step, trace_step
+from app.observability.traces import Step, trace_details, trace_step
 from app.providers.client import HTTPProvider, Provider, ProviderFailure, Reply, ToolCall
 from app.tools.registry import TOOL_SCHEMAS
 from app.tools.runner import execute_tool
 
 Update = Callable[[str | None, dict[str, object] | None, int], None]
+
+
+def model_tool_result(name: str, result: dict[str, Any]) -> dict[str, Any]:
+    """模型保留证据正文与引用身份，完整索引元数据仍由工具检查点保存。"""
+    if name != "knowledge_search" or not isinstance(result.get("sources"), list):
+        return result
+    visible = {"evidence_id", "content", "filename", "page", "truncated", "knowledge_base_id"}
+    return {**result, "sources": [
+        {key: value for key, value in source.items() if key in visible}
+        for source in result["sources"]
+    ]}
 
 
 class AgentState(TypedDict):
@@ -35,6 +46,8 @@ class AgentState(TypedDict):
     repetitions: dict[str, int]
     tool_cursor: int
     loop: NotRequired[dict[str, Any]]
+    steering_cursor: NotRequired[int]
+    steering_pending: NotRequired[bool]
 
 
 def run_graph(
@@ -52,6 +65,7 @@ def run_graph(
     _control: str | None = None,
     _control_prompt: str = "",
     tool_batch_executor: Callable[[list[ToolCall], int], list[dict[str, object]]] | None = None,
+    steer: Callable[[AgentState], bool] | None = None,
 ) -> AgentState:
     """两个节点形成有界循环；数据库负责取消、权限、事件和预算事实。"""
 
@@ -61,11 +75,14 @@ def run_graph(
 
         return run_closed_loop(
             settings, config, provider, messages, update, on_text, retries,
-            resume, node, save, tool_executor, tool_batch_executor,
+            resume, node, save, tool_executor, tool_batch_executor, steer,
         )
 
     def model(state: AgentState) -> AgentState:
         """检查执行边界后调用模型，并累计输出与工具提案。"""
+        if steer:
+            steer(state)
+        state["steering_pending"] = False
         if save:
             save(state, "model")
         if state["step"] >= min(config.max_steps, settings.max_model_steps):
@@ -78,19 +95,6 @@ def run_graph(
         available_tools = [] if finishing else list(config.tools)
         # 输入字节数与工具 Schema 作为保守预留，不作为实际供应商 Token 用量。
         schemas = getattr(provider, "tool_schemas", TOOL_SCHEMAS)
-        context_size = len(
-            json.dumps(
-                {
-                    "messages": state["messages"],
-                    "tools": [schemas[name] for name in available_tools],
-                },
-                ensure_ascii=False,
-            ).encode("utf-8")
-        )
-        if context_size > 32768:
-            raise ProviderFailure("context_limit")
-        charge = (context_size + config.max_output_tokens + 2048) * (retries + 1)
-        update("tool_status", {"stage": "model", "step": state["step"] + 1}, charge)
         # Provider 在请求期间也可调用 guard，及时发现取消、租约丢失或权限变化。
         provider.guard = lambda: update(None, None, 0)
         reply: Reply | None = None
@@ -103,6 +107,7 @@ def run_graph(
             output_limit = min(output_limit, 1024)
         if isinstance(provider, HTTPProvider):
             provider.bounded_answer = bool(policy or finishing)
+            provider.request_purpose = _control or "agent"
         # 约束在每轮请求前重算，工具返回空证据后不会沿用先前的引用要求。
         request_messages = [
             {key: value for key, value in message.items() if key != "rag_evidence"}
@@ -120,6 +125,19 @@ def run_graph(
                 "执行轮次预算已用尽，不再调用工具。仅用已有成功结果回答原问题，"
                 "明确说明尚未验证的内容；没有有效结果时简短说明限制，不编造结论。",
             }
+
+        # 检查真正发送的消息与 Schema，包含追加的证据约束；不删减原文来规避上限。
+        context_size = len(json.dumps({
+            "messages": request_messages,
+            "tools": [schemas[name] for name in available_tools],
+        }, ensure_ascii=False).encode("utf-8"))
+        trace_details(
+            context_bytes=context_size, context_limit_bytes=settings.model_context_limit_bytes
+        )
+        if context_size > settings.model_context_limit_bytes:
+            raise ProviderFailure("context_limit")
+        charge = (context_size + config.max_output_tokens + 2048) * (retries + 1)
+        update("tool_status", {"stage": "model", "step": state["step"] + 1}, charge)
 
         def publish(text: str) -> None:
             """事件与最终正文使用同一批文字，防止缓冲后显示和落库内容不一致。"""
@@ -204,8 +222,14 @@ def run_graph(
             if state["output_tokens"] is None or reply.output_tokens is None
             else state["output_tokens"] + reply.output_tokens,
         }
+        # 当前请求期间到达的指令在回答结束边界触发下一轮，不丢弃已接受的插话。
+        if not reply.calls and steer:
+            result["steering_pending"] = steer(result)
         if save:
-            save(result, "tools" if reply.calls else "done")
+            next_node = (
+                "tools" if reply.calls else "model" if result.get("steering_pending") else "done"
+            )
+            save(result, next_node)
         return result
 
     def tools(state: AgentState) -> AgentState:
@@ -232,21 +256,31 @@ def run_graph(
                 raise ProviderFailure("no_progress")
             try:
                 if (
-                    tool_batch_executor and call.name == "knowledge_search"
+                    tool_batch_executor
+                    and call.name in {"knowledge_search", "list_knowledge_bases"}
                     and cursor not in batch_results
                 ):
                     end = cursor
                     while (
                         end < len(state["calls"])
-                        and state["calls"][end].name == "knowledge_search"
+                        and state["calls"][end].name in {"knowledge_search", "list_knowledge_bases"}
                     ):
                         end += 1
                     if end - cursor > 1:
+                        for pending in state["calls"][cursor:end]:
+                            if pending.name not in config.tools:
+                                raise ProviderFailure("tool_not_authorized")
+                            update("tool_status", {
+                                "stage": "tool", "name": pending.name, "status": "running",
+                            }, 0)
                         results = tool_batch_executor(state["calls"][cursor:end], state["step"])
                         batch_results.update(enumerate(results, cursor))
                 if cursor in batch_results:
                     result = batch_results[cursor]
                 else:
+                    update("tool_status", {
+                        "stage": "tool", "name": call.name, "status": "running",
+                    }, 0)
                     with operation_span("tool." + call.name), trace_step(
                         "tool", call.name, iteration=state["step"], call_id=call.id
                     ) as tool_step:
@@ -293,7 +327,7 @@ def run_graph(
                 {
                     "role": "tool",
                     "tool_call_id": call.id,
-                    "content": json.dumps(result, ensure_ascii=False),
+                    "content": json.dumps(model_tool_result(call.name, result), ensure_ascii=False),
                 }
             )
             result_state["tool_count"] += 1
@@ -309,7 +343,10 @@ def run_graph(
     graph.add_node("model", model)
     graph.add_node("tools", tools)
     graph.add_conditional_edges(START, lambda _: "tools" if node == "tools" else "model")
-    graph.add_conditional_edges("model", lambda state: "tools" if state["calls"] else END)
+    graph.add_conditional_edges(
+        "model", lambda state: "tools" if state["calls"] else
+        "model" if state.get("steering_pending") else END,
+    )
     graph.add_edge("tools", "model")
     state: AgentState = {
         "messages": messages,

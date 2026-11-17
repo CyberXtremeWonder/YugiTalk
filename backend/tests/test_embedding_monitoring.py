@@ -36,3 +36,28 @@ def test_embedding_failure_is_safe_and_correlated(monkeypatch: pytest.MonkeyPatc
     denied = client.post("/v1/embeddings", json={"input": ["private-input"]})
     assert denied.status_code == 401
     assert denied.headers["X-Request-ID"]
+
+    class OutOfMemoryError(RuntimeError):
+        pass
+
+    batches = []
+
+    class Model:
+        device = "cuda:0"
+
+        def encode(self, texts, batch_size, normalize_embeddings):
+            batches.append(batch_size)
+            if batch_size > 8:
+                raise OutOfMemoryError()
+            return SimpleNamespace(tolist=lambda: [[1.0] for _ in texts])
+
+    monkeypatch.setattr(module, "model", Model())
+    monkeypatch.setattr(module, "torch", SimpleNamespace(cuda=SimpleNamespace(
+        OutOfMemoryError=OutOfMemoryError, empty_cache=lambda: None,
+    )))
+    response = client.post("/v1/embeddings", json={"input": ["text"] * 64},
+                           headers={"Authorization": "Bearer dev-embedding-key"})
+    assert response.status_code == 200
+    assert len(response.json()["data"]) == 64
+    assert batches == [16, 8]
+    assert module.model.device == "cuda:0"

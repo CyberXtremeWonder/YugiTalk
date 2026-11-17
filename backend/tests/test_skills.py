@@ -134,7 +134,7 @@ def test_invalid_manifest_and_csrf(client: TestClient, change):
 
 def test_frozen_version_prompt_and_idempotency(client: TestClient):
     """运行仅注入所选完整版本，编辑后仍使用原说明，幂等键包含技能版本。"""
-    skill, headers, body, task = skill_task(client)
+    skill, headers, body, task = skill_task(client, token_budget=100000)
     new = client.post(
         f"/api/v1/skills/{skill['id']}/versions",
         json={**DATA, "instructions": "不会进入原任务的新正文"},
@@ -170,7 +170,9 @@ def test_frozen_version_prompt_and_idempotency(client: TestClient):
     assert result["status"] == "succeeded", result
     assert result["skill"]["version_id"] == skill["version_id"]
     assert observed[0][1] == ["delegate_task"]
-    assert observed[1][1] == ["text_stats", "list_knowledge_bases", "knowledge_search"]
+    assert observed[1][1] == [
+        "text_stats", "list_knowledge_bases", "knowledge_search", "research_report", "export_document",
+    ]
     context = str(observed[1][0])
     assert "先统计文本" in context and "不会进入原任务" not in context
     assert "instructions" not in result["skill"]
@@ -193,7 +195,9 @@ def test_tool_intersection_blocks_forged_call(client: TestClient):
                     id="delegate", name="delegate_task", arguments={"task": "执行所选技能"},
                 )]))
                 return
-            assert tools == ["list_knowledge_bases", "knowledge_search"]
+            assert tools == [
+                "list_knowledge_bases", "knowledge_search", "research_report", "export_document",
+            ]
             yield ModelEvent(
                 "reply",
                 reply=Reply(
@@ -296,16 +300,24 @@ def test_empty_knowledge_cannot_be_overridden_by_skill(client, storage):
 
 def test_context_limit_does_not_truncate_instructions(client):
     """长正文与长问题超出上下文时明确拒绝，不把截断后不完整的流程交给模型。"""
-    skill, headers, body, task = skill_task(client, message="长" * 6000, token_budget=100000)
+    client.app.state.settings.model_context_limit_bytes = 32768
+    skill, headers, body, task = skill_task(client, token_budget=100000)
     client.post(f"/api/v1/runs/{task['id']}/cancel", headers=headers)
     version = client.post(
         f"/api/v1/skills/{skill['id']}/versions",
         json={**DATA, "instructions": "流程" * 3000},
         headers=headers,
     ).json()
+    # 新会话只包含本轮长问题，避免历史摘要先触发其他模型调用或预算限制。
+    conversation = client.post(
+        "/api/v1/me/conversations", json={"title": "上下文容量"}, headers=headers
+    ).json()
     headers["Idempotency-Key"] = str(uuid4())
     task = client.post(
-        "/api/v1/runs", json={**body, "skill_version_id": version["version_id"]}, headers=headers
+        "/api/v1/runs",
+        json={**body, "conversation_id": conversation["id"], "message": "长" * 6000,
+              "skill_version_id": version["version_id"]},
+        headers=headers,
     ).json()
     called = []
 

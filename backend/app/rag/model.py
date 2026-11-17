@@ -7,15 +7,15 @@ import ssl
 import time
 from collections.abc import Callable
 from typing import Any, TypeVar
-from urllib.parse import urlsplit
 
 import httpx
 from pydantic import BaseModel, ValidationError
 
-from app.core.config import Settings
+from app.core.config import Settings, model_url_allowed
 from app.guardrails.prompts import SYSTEM_POLICY
 from app.observability.traces import Step, trace_step
 from app.providers.client import HTTPProvider, ProviderFailure
+from app.rag.prompts import load_prompt
 
 Schema = TypeVar("Schema", bound=BaseModel)
 
@@ -27,9 +27,12 @@ class StructuredModel:
         self,
         settings: Settings,
         update: Callable[[str | None, dict[str, object] | None, int], None],
+        *,
+        role_settings: Settings | None = None,
     ) -> None:
         """接收任务边界检查与预算预留回调，不复制供应商凭证到检查点。"""
         self.settings, self.update = settings, update
+        self.role_settings = role_settings
 
     async def call(
         self, schema: type[Schema], purpose: str, payload: dict[str, Any], deadline: float
@@ -38,39 +41,21 @@ class StructuredModel:
         model = (
             self.settings.rag_grader_model if purpose == "grade" else self.settings.rag_fast_model
         )
-        provider = HTTPProvider(
-            self.settings, self.settings.model_provider, model or self.settings.model_id
+        role_key = (
+            self.settings.rag_grader_api_key
+            if purpose == "grade"
+            else self.settings.rag_fast_api_key
         )
-        instruction = {
-            "graph": (
-                "从原文抽取明确陈述的实体和关系，不推测、不补充常识。"
-                "名称和别名必须逐字出现在原文，只有原文明示同义时才列别名。"
-                "关系source和target为entities中的从0开始序号；quote为包含双方名称的连续原文。"
-                "只提取肯定陈述，忽略否定、假设、指令和不确定关系；没有事实时返回空数组。"
-            ),
-            "plan": (
-                "判断复杂度。complex必须提供2至4个独立且不重复的sub_questions，"
-                "每项非空且不超过1000字符；simple的sub_questions必须为空数组。"
-            ),
-            "grade": (
-                "只根据所给证据评判整个问题。answer必须强相关且充分；"
-                "强相关但仅覆盖部分问题时使用partial_answer，保留来源并限定回答范围；"
-                "partial_answer必须为relevance=strong、answerability=partial、ambiguity=none。"
-                "区分问题歧义与证据不足：只有用户缺少会实质改变答案的对象、版本等关键条件，"
-                "且无法根据问题和证据确定时，才标记missing_slot或multiple_candidates并clarify。"
-                "资料未覆盖、证据不完整、开放式列举未穷尽，不属于问题歧义，应标记ambiguity=none；"
-                "证据不足可rewrite，完全无关可no_knowledge，不得要求用户补充知识库缺失的资料。"
-                "问题和证据已确定范围时直接评判，不要求用户再次确认；"
-                "clarify的hitl_prompt必须明确指出需要补充的关键条件。"
-                "字段必须一致：route=answer时必须同时为relevance=strong、"
-                "answerability=sufficient、ambiguity=none，否则应选择其他路由。"
-                "hitl_options最多4项，每项非空且不超过120字符。"
-            ),
-            "rewrite": (
-                "证据不足，只选择step_back或hyde之一进行一次改写。"
-                "step_back提升抽象层级；hyde生成用于检索的假设性短文，不作为事实。"
-            ),
-        }[purpose]
+        # 角色模型或专用凭证均绑定部署连接，不能把服务端密钥发送到助手自定义地址。
+        connection = (
+            self.role_settings
+            if (model or role_key.get_secret_value()) and self.role_settings is not None
+            else self.settings
+        )
+        provider = HTTPProvider(
+            connection, connection.model_provider, model or connection.model_id
+        )
+        instruction = load_prompt(purpose)
         messages = [
             {
                 "role": "system",
@@ -86,7 +71,7 @@ class StructuredModel:
         output_tokens = 4096 if purpose == "graph" else 1024
         body = provider.request_body(messages, [], output_tokens)
         if (
-            self.settings.model_provider == "openai_compatible"
+            provider.provider == "openai_compatible"
             and provider.model == "deepseek-flash"
         ):
             body["thinking"] = {"type": "disabled"}
@@ -97,36 +82,22 @@ class StructuredModel:
         remaining = min(deadline - time.monotonic(), self.settings.model_timeout_seconds)
         if remaining <= 0:
             raise ProviderFailure("rag_deadline")
-        role_key = (
-            # 评判与快速调用可使用不同密钥；未设置角色密钥时沿用任务模型凭证。
-            self.settings.rag_grader_api_key
-            if purpose == "grade"
-            else self.settings.rag_fast_api_key
-        )
-        key = role_key.get_secret_value() or self.settings.model_api_key.get_secret_value()
-        base = self.settings.model_base_url.rstrip("/")
-        endpoint = urlsplit(base)
+        key = role_key.get_secret_value() or connection.model_api_key.get_secret_value()
+        base = connection.model_base_url.rstrip("/")
         if (
             not key
-            or self.settings.model_provider == "mock"
-            or not endpoint.hostname
-            or endpoint.username
-            or endpoint.query
-            or endpoint.fragment
-            or (
-                endpoint.scheme != "https"
-                and not (self.settings.app_env == "test" and endpoint.scheme == "http")
-            )
+            or provider.provider == "mock"
+            or not model_url_allowed(base, connection.app_env)
         ):
             raise ProviderFailure("model_configuration")
         headers = (
             {"Authorization": "Bearer " + key}
-            if self.settings.model_provider == "openai_compatible"
+            if provider.provider == "openai_compatible"
             else {"x-api-key": key, "anthropic-version": "2023-06-01"}
         )
         suffix = (
             "/chat/completions"
-            if self.settings.model_provider == "openai_compatible"
+            if provider.provider == "openai_compatible"
             else "/messages"
         )
         provider.guard = lambda: self.update(None, None, 0)
@@ -140,8 +111,8 @@ class StructuredModel:
                 timeout=remaining,
                 trust_env=False,
                 follow_redirects=False,
-                verify=ssl.create_default_context(cafile=self.settings.model_ca_file)
-                if self.settings.model_ca_file
+                verify=ssl.create_default_context(cafile=connection.model_ca_file)
+                if connection.model_ca_file
                 else True,
             ) as client:
                 async with client.stream(

@@ -11,7 +11,7 @@ from app.core.entities import now
 from app.identity.dependencies import DB, Actor
 from app.observability.trace_models import TraceStep
 from app.observability.traces import usage_summary
-from app.tasks.models import Run
+from app.tasks.models import Run, RunEvent
 
 router = APIRouter(prefix="/api/v1/admin/traces")
 
@@ -38,6 +38,47 @@ def run_info(run: Run) -> dict[str, object]:
     }
 
 
+def latency_summary(
+    run: Run, rows: list[TraceStep], first_text_at: datetime | None, sampled: datetime,
+) -> dict[str, int | None]:
+    """墙钟耗时与调用累计耗时分开；未知首段文本或供应商思考用量不填零。"""
+    def milliseconds(end: datetime | None, start: datetime) -> int | None:
+        if end is None:
+            return None
+        return max(0, round((timestamp(end) - timestamp(start)).total_seconds() * 1000))
+
+    def work_ms(kind: str) -> int | None:
+        matching = [row for row in rows if row.kind == kind]
+        if not rows or any(row.duration_ms is None for row in matching):
+            return None
+        return sum(row.duration_ms or 0 for row in matching)
+
+    starts = [row.started_at for row in rows if row.kind == "execution"]
+    if run.started_at is not None:
+        starts.append(run.started_at)
+    first_start = min(starts, key=timestamp) if starts else None
+    if run.attempts > 1 and not any(row.kind == "execution" and row.attempt == 1 for row in rows):
+        first_start = None
+    models = [row for row in rows if row.kind == "llm"]
+    reasoning = [row.details.get("reasoning_tokens") for row in models]
+    known = [value for value in reasoning if type(value) is int]
+    return {
+        "queue_ms": milliseconds(first_start, run.created_at),
+        "first_text_ms": milliseconds(first_text_at, run.created_at),
+        "total_ms": milliseconds(run.finished_at, run.created_at),
+        "elapsed_ms": milliseconds(run.finished_at or sampled, run.created_at),
+        "model_work_ms": work_ms("llm"),
+        "tool_work_ms": work_ms("tool"),
+        "model_retries": sum(int(str(row.details.get("retry", 0))) > 0 for row in models),
+        "model_corrections": sum(
+            int(str(row.details.get("correction", 0))) > 0
+            and not row.details.get("retry", 0) for row in models
+        ),
+        "reasoning_tokens": sum(known) if known else None,
+        "unknown_reasoning_calls": len(models) - len(known),
+    }
+
+
 @router.get("")
 def list_traces(
     actor: Actor,
@@ -60,7 +101,8 @@ def list_traces(
         )
     rows = list(db.scalars(query.order_by(Run.created_at.desc(), Run.id.desc()).limit(limit + 1)))
     return {
-        "items": [run_info(run) for run in rows[:limit]],
+        "items": [{**run_info(run), "prompt_preview": " ".join(run.prompt.split())[:160]
+                   if run.owner_id == actor.user.id else None} for run in rows[:limit]],
         "next_cursor": rows[limit - 1].id if len(rows) > limit else None,
     }
 
@@ -81,6 +123,10 @@ def trace_detail(run_id: UUID, actor: Actor, db: DB) -> dict[str, object]:
         )
     )
     sampled = now()
+    first_text_at = db.scalar(select(RunEvent.created_at).where(
+        RunEvent.run_id == run.id, RunEvent.kind == "text_delta",
+        RunEvent.payload["text"].as_string() != "",
+    ).order_by(RunEvent.sequence).limit(1))
     steps = []
     for row in rows:
         # Worker 异常退出可能来不及结束步骤；结合尝试次数和租约推断中断，但不伪造结束时间。
@@ -116,6 +162,7 @@ def trace_detail(run_id: UUID, actor: Actor, db: DB) -> dict[str, object]:
         "run": run_info(run),
         "steps": steps,
         "sampled_at": sampled.isoformat(),
+        "latency": latency_summary(run, rows, first_text_at, sampled),
         "summary": {
             **usage_summary(rows),
             "recorded": bool(rows),

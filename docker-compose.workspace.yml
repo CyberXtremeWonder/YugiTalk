@@ -1,0 +1,24 @@
+# 可选本地目录连接；默认开发启动不加载此文件，不开放任何本机目录。
+# 配置 WORKSPACE_HOST_ROOT 后使用：
+# docker compose -f docker-compose.yml -f docker-compose.workspace.yml up -d api worker
+services:
+  api:
+    environment:
+      WORKSPACE_ALLOWED_ROOTS: '["/workspaces"]'
+    volumes:
+      - type: bind
+        source: ${WORKSPACE_HOST_ROOT:?请先配置需要开放的本机目录}
+        target: /workspaces
+        read_only: true
+        bind:
+          create_host_path: false
+  worker:
+    environment:
+      WORKSPACE_ALLOWED_ROOTS: '["/workspaces"]'
+    volumes:
+      - type: bind
+        source: ${WORKSPACE_HOST_ROOT:?请先配置需要开放的本机目录}
+        target: /workspaces
+        read_only: true
+        bind:
+          create_host_path: false

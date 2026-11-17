@@ -3,6 +3,25 @@ import { identityRequest } from "./api";
 
 afterEach(() => vi.unstubAllGlobals());
 
+test("MCP 传输不匹配提示具体原因和修复方式", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi
+      .fn()
+      .mockResolvedValue(
+        new Response(JSON.stringify({ code: "mcp_transport_mismatch" }), {
+          status: 422,
+        }),
+      ),
+  );
+  await expect(
+    identityRequest("/me/mcp-servers/test/discover", "POST", {}),
+  ).rejects.toMatchObject({
+    status: 422,
+    message: expect.stringMatching(/传输类型不匹配.*SSE.*保存后重试/),
+  });
+});
+
 test("网络中断显示中文排障提示，不泄露原始浏览器错误", async () => {
   vi.stubGlobal(
     "fetch",

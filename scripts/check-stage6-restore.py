@@ -37,7 +37,7 @@ def main() -> None:
     # 演练每次使用独立目标，拒绝复用或覆盖任何已有目录。
     relative = "data/stage6-restore-" + str(time.time_ns())
     snapshot = data["backup"](
-        source_env, "yugitalk-stage6", ROOT / "docker-compose.stage6-test.yml"
+        source_env, "yugitalk-stage6", ROOT / "deploy/tests/docker-compose.stage6-test.yml"
     )
     restored = data["restore"](snapshot, relative)
     values = {

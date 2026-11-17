@@ -17,7 +17,7 @@ from app.tasks.execution import Execution
 from app.tasks.models import Run
 
 pytest_plugins = ["test_identity", "test_knowledge"]
-TOOLS = ["list_knowledge_bases", "knowledge_search"]
+TOOLS = ["list_knowledge_bases", "knowledge_search", "research_report", "export_document"]
 
 
 def searches(base, queries):
@@ -26,6 +26,94 @@ def searches(base, queries):
             "knowledge_base_id": base, "query": query,
         }) for i, query in enumerate(queries)
     ])
+
+
+@pytest.mark.parametrize("separator", ["duplicate", "catalog"])
+def test_independent_search_is_not_blocked_by_duplicate_or_catalog(
+    client, storage, monkeypatch, separator,
+):
+    _, _, base, _ = uploaded(client)
+    _, _, task, _ = setup_task(client, "Milvus 是什么", tools=[], token_budget=100000)
+    with Session(client.app.state.database) as db:
+        run = db.get(Run, task["id"])
+        run.snapshot = {**run.snapshot, "rag_config": {
+            **run.snapshot["rag_config"], "rag_parallel_queries": 2,
+        }}
+        db.commit()
+    started, queries = None, []
+
+    async def independent(pipeline, question, resume):
+        nonlocal started
+        if started is None:
+            started = asyncio.Event()
+        queries.append(question)
+        if question == "Milvus A":
+            # A 必须与 B 同时在执行；重复 A 或目录不能挡住 B 的并发名额。
+            await asyncio.wait_for(started.wait(), timeout=1)
+        else:
+            started.set()
+        return {"phase": "done", "sources": [], "route": "no_knowledge"}
+
+    monkeypatch.setattr(RagPipeline, "execute", independent)
+    batch = searches(base, ["Milvus A", "Milvus A", "Milvus B"])
+    if separator == "catalog":
+        batch.calls[1] = ToolCall(id="1", name="list_knowledge_bases", arguments={})
+
+    def answer(messages):
+        results = [m for m in messages if m["role"] == "tool"]
+        assert [m["tool_call_id"] for m in results] == ["0", "1", "2"]
+        middle = json.loads(results[1]["content"])
+        if separator == "duplicate":
+            assert middle["reused"] and middle["new_evidence_count"] == 0
+        else:
+            assert any(item["id"] == base for item in middle["items"])
+        return "没有找到充分证据。"
+
+    result = execute(client, task, [Script([batch, answer], TOOLS)])
+    assert result["status"] == "succeeded", result
+    assert queries == ["Milvus A", "Milvus B"]
+
+
+@pytest.mark.parametrize("boundary", ["text_stats", "unauthorized_catalog"])
+def test_search_batch_respects_tool_boundary_and_authorization(boundary):
+    from app.agents.contracts import AgentConfig
+    from app.agents.graph import run_graph
+    from app.agents.subagents import SCHEMAS
+    from app.core.config import Settings
+    from app.tools.registry import TOOL_SCHEMAS
+
+    calls = searches("00000000-0000-0000-0000-000000000001", ["A", "B"])
+    middle = ToolCall(id="middle", name="text_stats", arguments={"text": "abc"})
+    if boundary == "unauthorized_catalog":
+        middle = ToolCall(id="middle", name="list_knowledge_bases", arguments={})
+    calls.calls.insert(1, middle)
+    executed, batches = [], []
+    provider = Script([calls, "完成"], ["knowledge_search", "text_stats"])
+    provider.tool_schemas = {**TOOL_SCHEMAS, **SCHEMAS}
+
+    def execute_one(call, step):
+        executed.append(call.id)
+        return {"ok": True}
+
+    def batch(pending, step):
+        batches.append([call.id for call in pending])
+        return [execute_one(call, step) for call in pending]
+
+    def run():
+        return run_graph(
+            Settings(_env_file=None, app_env="test"),
+            AgentConfig(name="边界", tools=["knowledge_search", "text_stats"]), provider,
+            [{"role": "user", "content": "执行查询"}], lambda *args: None, lambda text: None, 0,
+            tool_executor=execute_one, tool_batch_executor=batch,
+        )
+
+    if boundary == "unauthorized_catalog":
+        with pytest.raises(ProviderFailure, match="tool_not_authorized"):
+            run()
+        assert not executed and not batches
+    else:
+        run()
+        assert executed == ["0", "middle", "1"] and not batches
 
 
 @pytest.mark.parametrize("limit", [1, 2, 4])

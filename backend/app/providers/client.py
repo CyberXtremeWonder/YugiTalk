@@ -12,8 +12,8 @@ from urllib.parse import urlsplit
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.core.config import Settings
-from app.observability.traces import trace_step
+from app.core.config import Settings, model_url_allowed
+from app.observability.traces import trace_details, trace_step
 from app.tools.registry import TOOL_SCHEMAS
 
 
@@ -95,6 +95,12 @@ class MockProvider:
             yield ModelEvent("reply", reply=Reply())
             return
 
+        if isinstance(context, dict) and context.get("context_kind") == "conversation_to_summarize":
+            self.guard()
+            yield ModelEvent("text", text="Mock 会话摘要：离线演示未调用真实模型。")
+            yield ModelEvent("reply", reply=Reply())
+            return
+
         if isinstance(context, dict) and context.get("context_kind") == "agent_plan":
             # 演示执行仍使用原始任务，避免把计划包装 JSON 当作用户问题。
             for message in reversed(messages[:-1]):
@@ -116,6 +122,38 @@ class MockProvider:
                 yield ModelEvent("reply", reply=Reply(calls=[ToolCall(
                     id="mock-delegate", name="delegate_task", arguments={"task": content[:4000]},
                 )]))
+            return
+        if "export_document" in tools and "research_report" not in tools and last["role"] == "user":
+            formats = [format for word, format in (
+                ("word", "docx"), (".docx", "docx"), ("pdf", "pdf"),
+                ("markdown", "md"), (".md", "md"),
+            ) if word in content.lower()]
+            yield ModelEvent("reply", reply=Reply(calls=[ToolCall(
+                id="mock-export-file", name="export_document", arguments={
+                    "title": "研究报告", "formats": list(dict.fromkeys(formats)) or ["md"],
+                    "source": "content",
+                    "content": "# 研究报告\n\nMock 文件生成演示。\n\n" + content,
+                },
+            )]))
+            return
+        if "research_report" in tools and last["role"] == "user" and any(
+            word in content.lower() for word in ("word", "pdf", "markdown", ".docx", ".md", "文件")
+        ):
+            formats = [format for word, format in (
+                ("word", "docx"), (".docx", "docx"), ("pdf", "pdf"),
+                ("markdown", "md"), (".md", "md"),
+            ) if word in content.lower()]
+            yield ModelEvent("reply", reply=Reply(calls=[ToolCall(
+                id="mock-research-file", name="research_report", arguments={
+                    "title": "研究报告", "question": content[:6000],
+                    "formats": list(dict.fromkeys(formats)) or ["md"],
+                    "web_enabled": False, "user_material": content[:20000],
+                },
+            )]))
+            return
+        if last["role"] == "tool" and isinstance(context, dict) and "files" in context:
+            yield ModelEvent("text", text="文件已生成，请下载下方附件。Mock 演示未执行真实研究。")
+            yield ModelEvent("reply", reply=Reply())
             return
         if "knowledge_search" in tools:
             if last["role"] == "user" and any(
@@ -219,6 +257,8 @@ class HTTPProvider:
         self.guard: Callable[[], None] = lambda: None
         self.tool_schemas: dict[str, Any] = TOOL_SCHEMAS
         self.bounded_answer = False
+        self.structured_output = False
+        self.request_purpose: str | None = None
 
     def request_body(
         self, messages: list[dict[str, Any]], tools: list[str], max_tokens: int
@@ -236,6 +276,15 @@ class HTTPProvider:
             if self.model == "deepseek-flash" and self.bounded_answer:
                 # 与结构化 RAG 调用使用相同协议：有界回答将预算用于可见正文。
                 body["thinking"] = {"type": "disabled"}
+            if self.request_purpose == "conversation_summary":
+                endpoint = urlsplit(self.settings.model_base_url)
+                if endpoint.hostname in {
+                    "localhost", "127.0.0.1", "::1", "host.docker.internal",
+                } and endpoint.port == 11434:
+                    # Ollama 的兼容接口通过 reasoning_effort 控制思考；摘要额度用于正文。
+                    body["reasoning_effort"] = "none"
+            if self.model == "deepseek-flash" and self.structured_output:
+                body["response_format"] = {"type": "json_object"}
             if tools:
                 body["tools"] = [
                     {"type": "function", "function": self.tool_schemas[name]} for name in tools
@@ -297,12 +346,7 @@ class HTTPProvider:
         """逐步产生公开文本和结构化回复，并在调用期间检查取消与执行边界。"""
         key = self.settings.model_api_key.get_secret_value()
         base = self.settings.model_base_url.rstrip("/")
-        target = urlsplit(base)
-        if not key or not target.hostname or target.username or target.query or target.fragment:
-            raise ProviderFailure("model_configuration")
-        if target.scheme != "https" and not (
-            self.settings.app_env == "test" and target.scheme == "http"
-        ):
+        if not key or not model_url_allowed(base, self.settings.app_env):
             raise ProviderFailure("model_configuration")
         suffix = "/chat/completions" if self.provider == "openai_compatible" else "/messages"
         headers = (
@@ -316,10 +360,12 @@ class HTTPProvider:
             # 退避后的下一次请求仍需复核取消与权限，不能仅在首个请求前检查。
             self.guard()
             published = False
+            started = time.monotonic()
             try:
                 with trace_step(
                     "llm", self.model, provider=self.provider, retry=attempt,
                     max_output_tokens=max_tokens, bounded_answer=self.bounded_answer,
+                    purpose=self.request_purpose,
                 ) as request_step, httpx.Client(
                     timeout=self.settings.model_timeout_seconds,
                     trust_env=False,
@@ -332,6 +378,15 @@ class HTTPProvider:
                     with client.stream(
                         "POST", base + suffix, json=body, headers=headers
                     ) as response:
+                        if response.status_code == 500:
+                            # 只识别固定模板错误，不记录或回显供应商响应正文。
+                            preview = b""
+                            for chunk in response.iter_bytes(chunk_size=1024):
+                                preview += chunk
+                                if len(preview) >= 8192:
+                                    break
+                            if b"No user query found in messages" in preview:
+                                raise ProviderFailure("model_context_template")
                         if response.status_code in {429, 500, 502, 503, 504, 529}:
                             raise ProviderFailure("model_transient")
                         if response.status_code in {401, 403}:
@@ -340,6 +395,13 @@ class HTTPProvider:
                             raise ProviderFailure("model_request_rejected")
                         for event in self.decode(response.iter_lines(), max_tokens):
                             published = True
+                            if (
+                                event.kind == "text" and event.text
+                                and "first_text_ms" not in request_step.details
+                            ):
+                                request_step.details["first_text_ms"] = round(
+                                    (time.monotonic() - started) * 1000
+                                )
                             if event.reply is not None:
                                 request_step.usage(event.reply)
                             yield event
@@ -407,6 +469,11 @@ class HTTPProvider:
                 if usage:
                     reply.input_tokens = usage.get("prompt_tokens")
                     reply.output_tokens = usage.get("completion_tokens")
+                    reasoning = (usage.get("completion_tokens_details") or {}).get(
+                        "reasoning_tokens"
+                    )
+                    if type(reasoning) is int and reasoning >= 0:
+                        trace_details(reasoning_tokens=reasoning)
                 for choice in data.get("choices", []):
                     if choice.get("index", 0) != 0:
                         continue

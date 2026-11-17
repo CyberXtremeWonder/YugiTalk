@@ -1,6 +1,7 @@
 """内部指标接口使用独立认证，公网反向代理不转发此路径。"""
 
 import hmac
+from datetime import UTC, timedelta
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response
@@ -37,10 +38,29 @@ def metrics(request: Request) -> Response:
     if not token or not hmac.compare_digest(supplied.encode(), ("Bearer " + token).encode()):
         raise HTTPException(401)
     telemetry = request.app.state.telemetry
+    sampled = now()
     with Session(request.app.state.database) as db:
         for status in ("queued", "running", "succeeded", "failed", "cancelled"):
             count = db.scalar(select(func.count()).select_from(Run).where(Run.status == status))
             telemetry.runs.labels(status).set(count or 0)
+        oldest = db.scalar(select(func.min(Run.created_at)).where(Run.status == "queued"))
+        if oldest is not None and oldest.tzinfo is None:
+            # SQLite返回无时区时间，持久任务的时间字段统一按UTC解释。
+            oldest = oldest.replace(tzinfo=UTC)
+        telemetry.queue_oldest_seconds.set(
+            max(0, (sampled - oldest).total_seconds()) if oldest is not None else 0
+        )
+        for status in ("succeeded", "failed"):
+            count = db.scalar(
+                select(func.count())
+                .select_from(Run)
+                .where(
+                    Run.status == status,
+                    Run.finished_at >= sampled - timedelta(minutes=15),
+                    Run.finished_at <= sampled,
+                )
+            )
+            telemetry.recent_runs.labels(status).set(count or 0)
         # 空间与用户预算分别记账；按任务汇总，避免把同一次消耗统计两遍。
         telemetry.tokens.set(db.scalar(select(func.coalesce(func.sum(Run.charged_tokens), 0))) or 0)
     return Response(telemetry.render(), media_type="text/plain; version=0.0.4; charset=utf-8")

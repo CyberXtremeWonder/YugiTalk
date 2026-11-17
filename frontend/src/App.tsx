@@ -1,17 +1,21 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { KnowledgeView } from "./rag/KnowledgeView";
 import { MemorySettings } from "./memory/MemorySettings";
 import { ChatView } from "./chat/ChatView";
+import { ConversationMenu } from "./chat/ConversationMenu";
+import { NavIcon } from "./shared/NavIcon";
 import { AgentsView } from "./agents/AgentsView";
 import { SkillsView } from "./skills/SkillsView";
 import { ToolsView } from "./tools/ToolsView";
+import { MCPPanel } from "./tools/MCPPanel";
+import { EditorPanel } from "./shared/EditorPanel";
 import { TasksView } from "./tasks/TasksView";
 import { Dashboard } from "./monitoring/Dashboard";
 import { TraceView } from "./trace/TraceView";
+import { UsageView } from "./usage/UsageView";
 import type { Conversation } from "./chat/api";
 import type { Run } from "./tasks/api";
-import { fetchHealth, type Health } from "./health/api";
 import { readView, views, type ViewId } from "./shared/views";
 import { Login } from "./identity/Login";
 import { DevelopmentView } from "./identity/DevelopmentView";
@@ -126,15 +130,35 @@ function Workbench({
   );
   const [logoutError, setLogoutError] = useState("");
   const [view, setView] = useState<ViewId>(readView);
+  const [knowledgeSelections, setKnowledgeSelections] = useState<Record<string, string>>({});
+  const selectKnowledgeBase = useCallback((id: string) => {
+    if (!currentAccount) return;
+    setKnowledgeSelections((previous) => ({ ...previous, [currentAccount.id]: id }));
+  }, [currentAccount]);
+  const viewPanel = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    // 只对内容区淡入，不重建页面或影响侧栏；快速切换时取消上一段动画。
+    const animation = viewPanel.current?.animate(
+      [{ opacity: 0 }, { opacity: 1 }],
+      { duration: 180, easing: "ease-out" },
+    );
+    return () => animation?.cancel();
+  }, [view]);
   const [draft, setDraft] = useState("");
+  const [agentVersion, setAgentVersion] = useState("");
   // 草稿、所选会话与当前任务由工作台持有；各业务页根据这些状态加载自己的数据。
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [currentRun, setCurrentRun] = useState<Run | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [historyError, setHistoryError] = useState("");
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renamingBusy, setRenamingBusy] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   useEffect(() => {
     // 空间删除或切换后清空旧会话引用，避免访问上一空间的数据。
     setConversationId(null);
+    setAgentVersion("");
     setCurrentRun(null);
     setConversations([]);
   }, [currentAccount?.id]);
@@ -152,12 +176,10 @@ function Workbench({
     return () => {
       active = false;
     };
-  }, [currentAccount, conversationId, view]);
+  }, [currentAccount, conversationId, view, currentRun?.id, currentRun?.status]);
   const [dark, setDark] = useState(false);
   const [menu, setMenu] = useState(false);
   const [panel, setPanel] = useState(false);
-  const [health, setHealth] = useState<Health | null>(null);
-  const [healthError, setHealthError] = useState("");
   const current = views[view];
   /** 切换当前功能页面并同步地址栏位置。 */
   function navigate(next: ViewId) {
@@ -196,28 +218,6 @@ function Workbench({
       viewport.removeEventListener("change", resize);
     };
   }, []);
-  useEffect(() => {
-    if (view !== "settings") return;
-    // 只在设置页探测服务，不让普通聊天操作持续发起健康检查请求。
-    // 页面切换时取消请求，避免卸载后更新；超时也要向用户反馈。
-    const controller = new AbortController();
-    let active = true;
-    const timeout = window.setTimeout(() => controller.abort(), 5000);
-    setHealth(null);
-    setHealthError("");
-    void fetchHealth(controller.signal)
-      .then((result) => {
-        if (active) setHealth(result);
-      })
-      .catch(() => {
-        if (active) setHealthError("暂时无法连接服务，请检查后端与部署状态。");
-      });
-    return () => {
-      active = false;
-      clearTimeout(timeout);
-      controller.abort();
-    };
-  }, [view]);
   return (
     <Dialog.Root open={panel} onOpenChange={setPanel}>
       <a
@@ -264,6 +264,7 @@ function Workbench({
                 "agents",
                 "skills",
                 "tools",
+                "mcp",
                 "knowledge",
                 "tasks",
               ] as const
@@ -277,7 +278,7 @@ function Workbench({
                   className={`nav-icon ${views[key].color}`}
                   aria-hidden="true"
                 >
-                  {views[key].symbol}
+                  <NavIcon name={key} />
                 </span>
                 {views[key].title}
               </button>
@@ -290,6 +291,15 @@ function Workbench({
               aria-current={view === "monitoring" ? "page" : undefined}
             >
               ▥ 实时监控
+            </button>
+          )}
+          {identity.user.platform_admin && (
+            <button
+              className="sidebar-option"
+              onClick={() => navigate("usage")}
+              aria-current={view === "usage" ? "page" : undefined}
+            >
+              ▦ Token 用量
             </button>
           )}
           {identity.user.platform_admin && (
@@ -343,29 +353,69 @@ function Workbench({
                 >
                   {conversation.title}
                 </button>
-                <details>
-                  <summary>管理对话</summary>
+                <ConversationMenu
+                  id={conversation.id}
+                  title={conversation.title}
+                  busy={deletingId === conversation.id || renamingBusy}
+                  onRename={() => {
+                    setHistoryError("");
+                    setRenamingId(conversation.id);
+                  }}
+                  onDelete={() => {
+                    setHistoryError("");
+                    setDeletingId(conversation.id);
+                    void identityRequest(
+                      `/conversations/${conversation.id}`,
+                      "DELETE",
+                      undefined,
+                      identity.csrf_token,
+                    )
+                      .then(() => {
+                        setConversations((rows) =>
+                          rows.filter((row) => row.id !== conversation.id),
+                        );
+                        if (conversationId === conversation.id) {
+                          setConversationId(null);
+                          setCurrentRun(null);
+                          setDraft("");
+                        }
+                      })
+                      .catch((failure) => setHistoryError(failure.message))
+                      .finally(() => setDeletingId(null));
+                  }}
+                />
+                <EditorPanel
+                  editing={renamingId === conversation.id}
+                  title="编辑对话名称"
+                  busy={renamingBusy}
+                  inline={false}
+                  onClose={() => setRenamingId(null)}
+                >
                   <form
                     onSubmit={(event) => {
                       event.preventDefault();
                       const form = new FormData(event.currentTarget);
                       const title = String(form.get("title") || "").trim();
+                      setRenamingBusy(true);
+                      setHistoryError("");
                       void identityRequest(
                         `/conversations/${conversation.id}`,
                         "PATCH",
                         { title },
                         identity.csrf_token,
                       )
-                        .then(() =>
+                        .then(() => {
                           setConversations((rows) =>
                             rows.map((row) =>
                               row.id === conversation.id
                                 ? { ...row, title }
                                 : row,
                             ),
-                          ),
-                        )
-                        .catch((failure) => setHistoryError(failure.message));
+                          );
+                          setRenamingId(null);
+                        })
+                        .catch((failure) => setHistoryError(failure.message))
+                        .finally(() => setRenamingBusy(false));
                     }}
                   >
                     <input
@@ -375,29 +425,10 @@ function Workbench({
                       maxLength={80}
                       defaultValue={conversation.title}
                     />
-                    <button>保存名称</button>
+                    <button disabled={renamingBusy}>保存名称</button>
+                    {historyError && <p role="alert">{historyError}</p>}
                   </form>
-                  <button
-                    onClick={() => {
-                      void identityRequest(
-                        `/conversations/${conversation.id}`,
-                        "DELETE",
-                        undefined,
-                        identity.csrf_token,
-                      )
-                        .then(() => {
-                          setConversations((rows) =>
-                            rows.filter((row) => row.id !== conversation.id),
-                          );
-                          if (conversationId === conversation.id)
-                            setConversationId(null);
-                        })
-                        .catch((failure) => setHistoryError(failure.message));
-                    }}
-                  >
-                    删除对话及消息
-                  </button>
-                </details>
+                </EditorPanel>
               </div>
             ))}
           </section>
@@ -449,7 +480,12 @@ function Workbench({
           </button>
           {logoutError && <p role="alert">{logoutError}</p>}
         </aside>
-        <main className="main-panel" id="main-panel" tabIndex={-1}>
+        <main
+          ref={viewPanel}
+          className="main-panel"
+          id="main-panel"
+          tabIndex={-1}
+        >
           <header className="topbar">
             <div className="header-title">
               <button
@@ -485,6 +521,8 @@ function Workbench({
                 key={`${currentAccount.id}:${conversationId}`}
                 value={draft}
                 onChange={setDraft}
+                agentVersion={agentVersion}
+                onAgentVersion={setAgentVersion}
                 identity={identity}
                 account={currentAccount}
                 conversationId={conversationId}
@@ -498,6 +536,14 @@ function Workbench({
             ) : (
               <section className="secondary-view">
                 <p role="alert">实时监控仅限管理员访问。</p>
+              </section>
+            )
+          ) : view === "usage" ? (
+            identity.user.platform_admin ? (
+              <UsageView />
+            ) : (
+              <section className="secondary-view">
+                <p role="alert">Token 用量仅限管理员访问。</p>
               </section>
             )
           ) : view === "trace" ? (
@@ -534,11 +580,15 @@ function Workbench({
               identity={identity}
               account={currentAccount}
             />
+          ) : view === "mcp" && currentAccount ? (
+            <MCPPanel key={currentAccount.id} identity={identity} />
           ) : view === "knowledge" && currentAccount ? (
             <KnowledgeView
               key={currentAccount.id}
               identity={identity}
               account={currentAccount}
+              base={knowledgeSelections[currentAccount.id] || ""}
+              setBase={selectKnowledgeBase}
             />
           ) : view === "tasks" && currentAccount ? (
             <TasksView
@@ -561,25 +611,12 @@ function Workbench({
               </span>
               <h1 id="view-title">{current.title}</h1>
               <p>{current.description}</p>
-              <div className="empty-state">
-                <span>{current.empty}</span>
-                <p>{current.hint}</p>
-                {view === "settings" && (
-                  <div role="status" aria-label="服务连接状态">
-                    {healthError ||
-                      (health
-                        ? `API：${health.status}；${Object.entries(
-                            health.checks,
-                          )
-                            .map(
-                              ([name, ok]) =>
-                                `${name} ${ok ? "正常" : "不可用"}`,
-                            )
-                            .join("；")}`
-                        : "正在检查服务…")}
-                  </div>
-                )}
-              </div>
+              {view !== "settings" && (
+                <div className="empty-state">
+                  <span>{current.empty}</span>
+                  <p>{current.hint}</p>
+                </div>
+              )}
               {view === "settings" && (
                 <>
                   {currentAccount && (

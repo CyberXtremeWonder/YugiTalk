@@ -2,7 +2,17 @@
 
 from datetime import datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (
+    JSON,
+    BigInteger,
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.entities import Base, identifier, now
@@ -32,7 +42,7 @@ class Document(Base):
     filename: Mapped[str] = mapped_column(String(160))
     content_hash: Mapped[str] = mapped_column(String(64))
     object_key: Mapped[str] = mapped_column(String(200))
-    size: Mapped[int] = mapped_column(Integer)
+    size: Mapped[int] = mapped_column(BigInteger)
     status: Mapped[str] = mapped_column(String(16), default="queued", index=True)
     error_code: Mapped[str | None] = mapped_column(String(50), nullable=True)
     progress: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)

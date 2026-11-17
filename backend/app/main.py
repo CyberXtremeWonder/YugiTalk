@@ -18,6 +18,8 @@ from starlette.responses import Response
 from app.agents.router import router as agents_router
 from app.audit.router import router as audit_router
 from app.chat.router import router as chat_router
+from app.chat.uploads import router as chat_upload_router
+from app.core.admission import DatabaseAdmission
 from app.core.config import Settings, load_settings
 from app.core.database import create_database
 from app.core.logging import configure_logging, log_failure
@@ -31,14 +33,19 @@ from app.observability.dashboard import LiveRequests
 from app.observability.router import router as observability_router
 from app.observability.telemetry import Telemetry, current_trace_id
 from app.observability.trace_router import router as trace_router
+from app.observability.usage import router as usage_router
 from app.rag.indexing import dispatch_document
 from app.rag.resume import router as rag_resume_router
 from app.rag.router import router as knowledge_router
 from app.skills.router import router as skills_router
 from app.tasks.execution import dispatch_run
+from app.tasks.notifications import EventHub
 from app.tasks.router import router as reliability_router
+from app.tools.mcp.errors import MCP_ERRORS
+from app.tools.mcp.router import router as mcp_router
 from app.tools.review_router import router as tool_review_router
 from app.tools.router import router as tools_router
+from app.workspaces.router import router as workspace_router
 
 logger = logging.getLogger(__name__)
 
@@ -71,10 +78,15 @@ def create_app(
         """启动日志并在应用关闭时释放数据库连接池。"""
         configure_logging(config.log_level)
         logger.info("API 已启动")
-        yield
-        app.state.database.dispose()
-        app.state.telemetry.shutdown()
-        logger.info("API 已完成关闭")
+        if app.state.database.dialect.name == "postgresql":
+            app.state.event_hub.start()
+        try:
+            yield
+        finally:
+            await app.state.event_hub.close()
+            app.state.database.dispose()
+            app.state.telemetry.shutdown()
+            logger.info("API 已完成关闭")
 
     development = config.app_env != "production"
     # 应用工厂只负责组装依赖；测试传入替身，正常启动则连接真实数据库、限流器和队列。
@@ -86,11 +98,15 @@ def create_app(
         redoc_url=None,
         openapi_url="/openapi.json" if development else None,
     )
-    app.state.health_checker = checker or DependencyChecker(config).check
+    dependency_checker = DependencyChecker(config)
+    app.state.health_checker = checker or dependency_checker.check
+    app.state.health_details_checker = None if checker else dependency_checker.check_admin_detailed
     app.state.settings = config
     app.state.telemetry = Telemetry(config, "api")
     app.state.live_requests = LiveRequests()
     app.state.database = engine if engine is not None else create_database(config)
+    app.state.database_admission = DatabaseAdmission(config)
+    app.state.event_hub = EventHub(config)
     app.state.login_limiter = limiter if limiter is not None else RedisLoginLimiter(config)
     app.state.registration_limiter = (
         limiter if limiter is not None else RedisLoginLimiter(config, "registration")
@@ -99,20 +115,27 @@ def create_app(
     app.state.dispatch_run = dispatch_run
     app.state.dispatch_document = dispatch_document
     # 各模块路由共享上面的依赖，通过 request.app.state 获取配置与服务入口。
+    from app.research.router import router as research_router
+
+    app.include_router(research_router)
     app.include_router(health_router)
     app.include_router(identity_router)
     app.include_router(agents_router)
     app.include_router(chat_router)
+    app.include_router(chat_upload_router)
     app.include_router(audit_router)
     app.include_router(knowledge_router)
     app.include_router(rag_resume_router)
     app.include_router(memory_router)
     app.include_router(skills_router)
     app.include_router(tools_router)
+    app.include_router(mcp_router)
     app.include_router(tool_review_router)
     app.include_router(reliability_router)
     app.include_router(observability_router)
     app.include_router(trace_router)
+    app.include_router(usage_router)
+    app.include_router(workspace_router)
 
     @app.get("/", include_in_schema=False)
     async def index() -> RedirectResponse:
@@ -216,6 +239,12 @@ def create_app(
         code, message = messages.get(error.status_code, ("request_error", "请求无法完成"))
         # 只允许预定义的业务提示，不能将原始异常或任意 detail 返回客户端。
         business_errors = {
+            "database_overloaded": (503, "服务繁忙，请稍后重试"),
+            "model_url_requires_https": (
+                422, "模型地址需使用 HTTPS；开发环境允许 localhost、127.0.0.1、"
+                "::1 或 host.docker.internal 的本地 HTTP 地址",
+            ),
+            **MCP_ERRORS,
             "email_already_registered": (409, "该邮箱已注册，请直接登录"),
             "verification_code_invalid": (422, "验证码无效、已过期或尝试次数过多，请重新获取"),
             "registration_mail_unavailable": (503, "注册邮件服务尚未配置或暂不可用"),
@@ -245,6 +274,15 @@ def create_app(
             "member_user_unavailable": (404, "用户不存在或已停用，请先初始化账号"),
             "last_workspace_owner": (409, "不能移除或降级工作空间的最后一位所有者"),
             "workspace_active_tasks": (409, "空间内有未结束任务，请先停止或完成任务后再删除"),
+            "workspace_directory_denied": (422, "目录不在服务端开放的读取范围内"),
+            "workspace_unavailable": (422, "目录不存在或当前不可访问"),
+            "workspace_import_invalid": (422, "导入目录无效，请检查文件路径、文本编码和 Word 文档"),
+            "workspace_import_limit": (413, "目录最多导入 100 个文件，总大小不得超过 50 MiB"),
+            "file_too_large": (
+                413, "文本文件最多 64 KiB，Word 文档最多 10 MiB，提取文本最多 64 KiB",
+            ),
+            "workspace_import_unavailable": (503, "目录导入暂不可用，原工作空间仍然保留"),
+            "workspace_import_uncertain": (503, "未确认导入是否已提交，请刷新工作空间查看结果"),
             "model_configuration_changed": (409, "模型配置已改变，请重新发布助手版本"),
             "skill_unavailable": (409, "技能已停用或删除，请重新选择"),
             "skill_content_changed": (409, "技能版本校验失败，请重新选择或联系管理员"),

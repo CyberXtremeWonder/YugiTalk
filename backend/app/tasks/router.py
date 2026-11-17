@@ -3,9 +3,10 @@
 import asyncio
 import hashlib
 import json
+import random
 from collections.abc import AsyncIterator
 from datetime import UTC, timedelta
-from typing import Annotated
+from typing import Annotated, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request
@@ -17,6 +18,7 @@ from app.accounts.access import AccountId, membership
 from app.agents.contracts import effective_config
 from app.agents.model_config import model_settings
 from app.agents.models import Agent, AgentVersion
+from app.agents.routing import simple_question
 from app.audit.service import audit
 from app.chat.access import owned_conversation
 from app.chat.models import Conversation, Message
@@ -27,11 +29,11 @@ from app.identity.dependencies import DB, Actor, Writer, authenticated
 from app.identity.models import User
 from app.providers.client import ProviderFailure
 from app.tasks.access import ACTIVE, TERMINAL, owned_run, run_data
-from app.tasks.contracts import RunInput
+from app.tasks.contracts import RunInput, SteeringInput
 from app.tasks.execution import append_event
 from app.tasks.ledger_models import RunRetry
 from app.tasks.models import Budget, Run, RunEvent
-from app.tasks.reliability import RETRYABLE
+from app.tasks.reliability import retryable_run, stop_slice, utc
 from app.tools.service import check_resume_tools, freeze_tools
 
 router = APIRouter(prefix="/api/v1", tags=["任务"])
@@ -57,17 +59,37 @@ def create_run(
     db.scalar(select(Conversation).where(Conversation.id == key).with_for_update())
     db.expire_all()
     conversation = owned_conversation(db, key, actor)
+    fingerprint_data = data.model_dump(mode="json")
+    # 无附件请求保留旧哈希格式，让更新前的重试仍能命中原任务。
+    if not data.uploaded_files:
+        fingerprint_data.pop("uploaded_files")
     fingerprint = hashlib.sha256(
-        json.dumps(data.model_dump(mode="json"), sort_keys=True, ensure_ascii=False).encode()
+        json.dumps(fingerprint_data, sort_keys=True, ensure_ascii=False).encode()
     ).hexdigest()
     # 幂等键识别同一次提交，内容哈希确认重发没有换参数；命中后不再保存消息或预留预算。
     previous = db.scalar(
         select(Run).where(Run.owner_id == actor.user.id, Run.idempotency_key == idempotency_key)
     )
     if previous:
-        if previous.request_hash != fingerprint:
+        matches = previous.request_hash == fingerprint
+        if not matches and not data.uploaded_files and data.research_project_id is None:
+            # 研究与附件字段引入前的任务没有 research_project_id:null。
+            fingerprint_data.pop("research_project_id")
+            matches = previous.request_hash == hashlib.sha256(
+                json.dumps(fingerprint_data, sort_keys=True, ensure_ascii=False).encode()
+            ).hexdigest()
+        if not matches:
             raise HTTPException(409)
         return run_data(previous)
+    research = None
+    if data.research_project_id:
+        from app.research.router import owned_project
+
+        research = owned_project(db, str(data.research_project_id), actor.user.id, lock=True)
+        if research.state.get("run_id") or data.knowledge_base_id or data.skill_version_id:
+            raise HTTPException(409)
+        if data.message != research.question:
+            raise HTTPException(422)
     version = db.get(AgentVersion, str(data.agent_version_id))
     agent = db.scalar(
         select(Agent).where(Agent.id == version.agent_id).with_for_update()
@@ -79,6 +101,10 @@ def create_run(
         raise HTTPException(404)
     # 将已发布助手版本及本次选用的资源冻结为任务快照，后续编辑不会改变本次执行配置。
     config = effective_config(version.config)
+    if data.uploaded_files:
+        if sum(len(file.text.encode("utf-8")) for file in data.uploaded_files) > 90000:
+            raise HTTPException(413)
+        config["uploaded_files"] = [file.model_dump() for file in data.uploaded_files]
     if data.skill_version_id:
         from app.skills.service import freeze_skill
 
@@ -90,13 +116,29 @@ def create_run(
         db, conversation.account_id, actor.user.id, config["tools"], settings
     )
     config["tools"] = list(config["tool_catalog"])
+    if research:
+        mock_search = config["provider"] == "mock" and "web_search" in cast(
+            list[str], version.config["tools"]
+        )
+        if (research.options["web_enabled"] and "web_search" not in config["tools"]
+                and not mock_search):
+            raise HTTPException(409, detail={"code": "research_search_not_authorized"})
+        config["research_project_id"] = research.id
+        config["timeout_seconds"] = research.options["timeout_seconds"]
     # 自动知识库任务使用执行助手；显式指定知识库的旧客户端保留原路径。
-    config["router_mode"] = not bool(data.knowledge_base_id)
+    has_mcp = any(item["kind"] == "mcp" for item in config["tool_catalog"].values())
+    config["router_mode"] = has_mcp or not bool(data.knowledge_base_id)
     from app.rag.pipeline import local_plan
 
-    # 短单意图问答直接执行；复杂任务、Skill 和闭环流程继续使用原委派路径。
+    # 闭环只为无历史的明确问答走快速路径，避免把复杂任务的补充要求误判为新问题。
+    simple_closed_loop = bool(
+        config.get("closed_loop") and not research and simple_question(data.message)
+        and db.scalar(select(Message.id).where(Message.conversation_id == key).limit(1)) is None
+    )
     config["direct_mode"] = bool(
-        config["router_mode"] and not config.get("closed_loop") and not config.get("skill")
+        config["router_mode"] and (not config.get("closed_loop") or simple_closed_loop)
+        and not config.get("skill")
+        and not has_mcp
         and local_plan(data.message).complexity == "simple"
     )
     if config["router_mode"]:
@@ -126,10 +168,8 @@ def create_run(
         connection_settings.model_api_key.get_secret_value() and connection_settings.model_base_url
     ):
         raise HTTPException(503)
-    # 同一会话不能同时生成两轮回复；此外还要分别检查空间和用户的并发上限。
+    # 同一会话允许多个任务，空间和用户的并发上限继续生效。
     active = select(Run).where(Run.status.in_(ACTIVE))
-    if db.scalar(active.where(Run.conversation_id == key).limit(1)):
-        raise HTTPException(409)
     for column, value, cap in (
         (Run.account_id, conversation.account_id, settings.workspace_concurrency),
         (Run.owner_id, actor.user.id, settings.user_concurrency),
@@ -161,7 +201,11 @@ def create_run(
     sequence = (
         db.scalar(select(func.max(Message.sequence)).where(Message.conversation_id == key)) or 0
     ) + 1
-    db.add(Message(conversation_id=key, sequence=sequence, role="user", content=data.message))
+    db.add(Message(
+        conversation_id=key, sequence=sequence, role="user", content=data.message,
+        uploaded_files=[file.model_dump() for file in data.uploaded_files],
+    ))
+    config["conversation_upto_sequence"] = sequence
     run = Run(
         account_id=conversation.account_id,
         owner_id=actor.user.id,
@@ -175,6 +219,11 @@ def create_run(
     )
     db.add(run)
     db.flush()
+    if research:
+        research.state = {"run_id": run.id, "phase": "researching"}
+    from app.tasks.retention import prune_user_history
+
+    prune_user_history(db, actor.user.id)
     audit(db, actor.user, "run.create", run.account_id, run.id)
     db.commit()
     result = run_data(run)
@@ -195,12 +244,15 @@ def get_run(run_id: UUID, db: DB, actor: Actor) -> dict[str, object]:
 
 @router.get("/conversations/{conversation_id}/runs")
 def conversation_runs(conversation_id: UUID, db: DB, actor: Actor) -> dict[str, object]:
-    """验证对话所有权后返回最近的执行任务。"""
+    """返回最近 100 条任务及全部活动任务，旧暂停任务仍可继续或停止。"""
     key = str(conversation_id)
     owned_conversation(db, key, actor)
-    rows = db.scalars(
-        select(Run).where(Run.conversation_id == key).order_by(Run.created_at.desc()).limit(20)
-    )
+    recent = select(Run.id).where(Run.conversation_id == key).order_by(
+        Run.created_at.desc(), Run.id.desc()
+    ).limit(100)
+    rows = db.scalars(select(Run).where(
+        Run.conversation_id == key, (Run.id.in_(recent) | Run.status.in_(ACTIVE)),
+    ).order_by(Run.created_at.desc(), Run.id.desc()))
     return {"items": [run_data(row) for row in rows]}
 
 
@@ -208,20 +260,133 @@ def conversation_runs(conversation_id: UUID, db: DB, actor: Actor) -> dict[str, 
 def workspace_runs(
     account_id: AccountId, db: DB, actor: Actor, limit: Limit = 20, cursor: UUID | None = None
 ) -> dict[str, object]:
-    """分页返回当前用户在指定空间内的执行任务。"""
+    """按时间倒序分页返回本人最近 100 条及全部活动任务。"""
     key = str(account_id)
     membership(db, key, actor.user.id)
-    rows = db.scalars(
-        select(Run)
-        .where(
-            Run.account_id == key,
-            Run.owner_id == actor.user.id,
-            Run.id > (str(cursor) if cursor else ""),
-        )
-        .order_by(Run.id)
-        .limit(limit + 1)
+    from app.tasks.retention import HISTORY_LIMIT
+
+    recent = select(Run.id).where(Run.owner_id == actor.user.id).order_by(
+        Run.created_at.desc(), Run.id.desc()
+    ).limit(HISTORY_LIMIT)
+    query = select(Run, Conversation.title).join(
+        Conversation, Conversation.id == Run.conversation_id
     )
-    return page([run_data(row) for row in rows], limit)
+    query = query.where(
+        Run.account_id == key, Run.owner_id == actor.user.id,
+        Run.id.in_(recent) | Run.status.in_(ACTIVE),
+    )
+    if cursor:
+        boundary = owned_run(db, str(cursor), actor)
+        query = query.where((Run.created_at < boundary.created_at) | (
+            (Run.created_at == boundary.created_at) & (Run.id < boundary.id)
+        ))
+    rows = db.execute(query.order_by(Run.created_at.desc(), Run.id.desc()).limit(limit + 1))
+    return page([{**run_data(row), "conversation_title": title,
+                  "prompt_preview": " ".join(row.prompt.split())[:160],
+                  "created_at": row.created_at.isoformat()} for row, title in rows], limit)
+
+
+@router.post("/runs/{run_id}/steer", status_code=202)
+def steer_run(
+    run_id: UUID,
+    data: SteeringInput,
+    db: DB,
+    actor: Writer,
+    idempotency_key: Annotated[str, Header(min_length=1, max_length=128)],
+) -> dict[str, object]:
+    """持久化原任务的插话；与结算采用相同锁序，重试不重复保存消息。"""
+    previous = owned_run(db, str(run_id), actor)
+    db.scalar(select(User).where(User.id == previous.account_id).with_for_update())
+    db.scalar(select(User).where(User.id == actor.user.id).with_for_update())
+    db.scalar(
+        select(Conversation).where(Conversation.id == previous.conversation_id).with_for_update()
+    )
+    run = db.scalar(
+        select(Run).where(Run.id == previous.id).with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    assert run is not None
+    fingerprint = hashlib.sha256(data.message.encode()).hexdigest()
+    instructions = list(cast(list[dict[str, object]], run.snapshot.get("steering", [])))
+    for instruction in instructions:
+        if instruction["key"] == idempotency_key:
+            if instruction["hash"] != fingerprint:
+                raise HTTPException(409, detail={"code": "steering_conflict"})
+            return run_data(run)
+    if not data.message.strip():
+        raise HTTPException(422)
+    if run.status not in {"queued", "running", "paused"} or run.cancel_requested:
+        raise HTTPException(409, detail={"code": "steering_unavailable"})
+    if run.snapshot.get("research_project_id"):
+        raise HTTPException(409, detail={"code": "steering_unsupported"})
+    if len(instructions) >= 20:
+        raise HTTPException(429, detail={"code": "steering_limit"})
+    instructions.append({
+        "key": idempotency_key, "hash": fingerprint, "message": data.message.strip(),
+    })
+    run.snapshot = {**run.snapshot, "steering": instructions}
+    run.state_version += 1
+    sequence = (db.scalar(select(func.max(Message.sequence)).where(
+        Message.conversation_id == run.conversation_id,
+    )) or 0) + 1
+    db.add(Message(
+        conversation_id=run.conversation_id, sequence=sequence,
+        role="user", content=data.message.strip(),
+    ))
+    append_event(db, run, "tool_status", {"stage": "steering_queued"})
+    audit(db, actor.user, "run.steer", run.account_id, run.id)
+    db.commit()
+    return run_data(run)
+
+
+@router.post("/runs/{run_id}/pause")
+def pause_run(run_id: UUID, db: DB, actor: Writer) -> dict[str, object]:
+    """保留执行栈与租约，暂停排队或运行中的任务；重复请求不改变状态。"""
+    key = str(run_id)
+    owned_run(db, key, actor)
+    run = db.scalar(
+        select(Run).where(Run.id == key).with_for_update().execution_options(populate_existing=True)
+    )
+    assert run is not None
+    if run.status in {"queued", "running"}:
+        if run.slice_started_at:
+            run.active_seconds += max(0, int((now() - utc(run.slice_started_at)).total_seconds()))
+        run.slice_started_at = None
+        run.status = "paused"
+        run.state_version += 1
+        append_event(db, run, "run_state", {"status": "paused"})
+        audit(db, actor.user, "run.pause", run.account_id, run.id)
+        db.commit()
+    return run_data(run)
+
+
+@router.post("/runs/{run_id}/resume")
+def resume_run(run_id: UUID, db: DB, actor: Writer, request: Request) -> dict[str, object]:
+    """优先唤醒持有租约的原执行栈；尚未领取或失联的任务沿用检查点排队。"""
+    key = str(run_id)
+    owned_run(db, key, actor)
+    run = db.scalar(
+        select(Run).where(Run.id == key).with_for_update().execution_options(populate_existing=True)
+    )
+    assert run is not None
+    if run.status != "paused":
+        return run_data(run)
+    if run.lease_token and run.lease_until and utc(run.lease_until) > now():
+        run.status, run.slice_started_at = "running", now()
+    else:
+        stop_slice(run)
+        run.status, run.last_dispatched_at = "queued", None
+    run.state_version += 1
+    append_event(db, run, "run_state", {"status": run.status})
+    audit(db, actor.user, "run.resume", run.account_id, run.id)
+    db.commit()
+    if run.status == "queued":
+        try:
+            request.app.state.dispatch_run(key)
+        except Exception:
+            # 排队意图已提交，投递失败由恢复调度重试。
+            pass
+    return run_data(run)
 
 
 @router.post("/runs/{run_id}/cancel")
@@ -313,12 +478,13 @@ def events(
     selected = set(types.split(",")) if types else None
     allowed = {
         "text_delta", "tool_status", "checkpoint_restored", "completed", "error", "clarification",
+        "run_state",
     }
     if selected is not None:
         if not selected <= allowed:
             raise HTTPException(422)
         # 终态和恢复事件必须送达，订阅者不能过滤掉决定结束或替换正文的控制事件。
-        selected |= {"completed", "error", "clarification", "checkpoint_restored"}
+        selected |= {"completed", "error", "clarification", "checkpoint_restored", "run_state"}
     engine: Engine = request.app.state.database
     # 在发出响应头前校验过期游标；释放请求事务，避免 SSE 长时间占用连接池。
     db.rollback()
@@ -327,36 +493,42 @@ def events(
     async def stream() -> AsyncIterator[str]:
         """把数据库中的公开事件转为 SSE 帧，直到读完终态事件或客户端断开。"""
         nonlocal last
-        text_received = False
-        started = asyncio.get_running_loop().time()
-        while not await request.is_disconnected():
-            try:
-                # 同步数据库查询移到线程中；每次轮询独立开关 Session，不长期占用连接。
-                entries, done = await asyncio.to_thread(
-                    poll_events, engine, request, key, last, settings
-                )
-            except HTTPException:
-                # 权限撤销或会话过期后关闭流，不继续发送任何任务内容。
-                return
-            for item in entries:
-                # SSE 的 id 用于客户端续传，data 则携带类型、序号和公开业务内容。
-                last = int(str(item["sequence"]))
-                if selected is not None and item["type"] not in selected:
+        admission = request.app.state.database_admission
+        with request.app.state.event_hub.subscribe(key) as changed:
+            while not await request.is_disconnected():
+                # 先清标记再读库，读库期间的提交仍会唤醒下一轮；不信任通知正文。
+                changed.clear()
+                try:
+                    entries, done = await admission.run(
+                        poll_events, engine, request, key, last, settings
+                    )
+                except HTTPException:
+                    # 权限失效或准入过载时关闭流，客户端可从原游标重连。
+                    return
+                for item in entries:
+                    # SSE 的 id 用于客户端续传，data 携带公开业务内容。
+                    last = int(str(item["sequence"]))
+                    if selected is not None and item["type"] not in selected:
+                        continue
+                    encoded = json.dumps(item, ensure_ascii=False)
+                    yield f"id: {key}:{last}\nevent: {item['type']}\ndata: {encoded}\n\n"
+                if entries and selected is not None and entries[-1]["type"] not in selected:
+                    # 过滤掉的事件也推进游标，避免断线后重复扫描。
+                    yield f"id: {key}:{last}\nevent: cursor\ndata: " + json.dumps({
+                        "sequence": last, "type": "cursor", "payload": {},
+                    }) + "\n\n"
+                if done:
+                    return
+                if len(entries) == 100:
                     continue
-                text_received = text_received or item["type"] == "text_delta"
-                encoded = json.dumps(item, ensure_ascii=False)
-                yield f"id: {key}:{last}\nevent: {item['type']}\ndata: {encoded}\n\n"
-            if entries and selected is not None and entries[-1]["type"] not in selected:
-                # 一批被过滤的事件只补一帧游标，既减少传输，也保证断线不会重扫旧事件。
-                yield f"id: {key}:{last}\nevent: cursor\ndata: " + json.dumps({
-                    "sequence": last, "type": "cursor", "payload": {},
-                }) + "\n\n"
-            if done:
-                return
-            yield ": heartbeat\n\n"
-            # 首内容前短暂缩短等待，随后恢复普通轮询，避免长任务持续增加数据库负担。
-            waiting_first = not text_received and asyncio.get_running_loop().time() - started < 5
-            await asyncio.sleep(0.1 if waiting_first else 0.3)
+                yield ": heartbeat\n\n"
+                try:
+                    # 定期补读兼顾漏通知、Redis 故障及闲置流的权限撤销；抖动避免同步查库。
+                    await asyncio.wait_for(
+                        changed.wait(), settings.run_event_fallback_seconds * random.uniform(0.8, 1)
+                    )
+                except TimeoutError:
+                    pass
 
     return StreamingResponse(
         stream(),
@@ -398,8 +570,7 @@ def retry(
     check_resume_skill(db, run.snapshot, run.account_id)
     check_resume_tools(db, run.account_id, run.owner_id, run.snapshot, settings)
     if (
-        run.status != "failed"
-        or run.error_code not in RETRYABLE
+        not retryable_run(run)
         or run.attempts >= settings.run_max_attempts
     ):
         raise HTTPException(409)
@@ -408,8 +579,6 @@ def retry(
     except ProviderFailure as error:
         raise HTTPException(409, detail={"code": str(error)}) from error
     active = select(Run).where(Run.status.in_(ACTIVE))
-    if db.scalar(active.where(Run.conversation_id == run.conversation_id).limit(1)):
-        raise HTTPException(409)
     for column, value, cap in (
         (Run.account_id, run.account_id, settings.workspace_concurrency),
         (Run.owner_id, run.owner_id, settings.user_concurrency),

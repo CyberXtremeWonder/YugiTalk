@@ -215,6 +215,7 @@ def initialize(env_file: Path, certificate: bool = False) -> Path:
     """检查生产凭证与安全字符后创建目录及配置，原数据保持不变。"""
     values = dict(dotenv_values(env_file, interpolate=False))
     root, storage = validate_values(values, certificate)
+    origin = values.get("PUBLIC_ORIGIN") or ""
     for folder in (
         "postgres",
         "redis",

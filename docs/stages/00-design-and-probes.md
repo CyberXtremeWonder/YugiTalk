@@ -12,8 +12,8 @@
 - 前端 `package.json`、`package-lock.json`：锁定依赖与工具链。
 - `backend/probes/`、`backend/tests/`：工具契约、FastAPI 兼容、中断恢复、真实队列和重启验证。
 - `deploy/archive/stages/docker-compose.stage0.yml`、`backend/Dockerfile.probe`：隔离试验环境，基础镜像摘要固定。
-- `docs/ARCHITECTURE.md`、`API.md`、`TEST_PLAN.md`、`adr/0001-runtime-and-worker.md`、`PROJECT_MANUAL.md`。
-- `docs/ui/workbench.html`：深浅主题、响应式导航与任务详情草图。
+- `docs/ARCHITECTURE.md`、`API.md`、`TEST_PLAN.md`、`adr/0001-runtime-and-worker.md`、`README.md`。
+- `docs/archive/ui/workbench.html`：深浅主题、响应式导航与任务详情草图。
 - `scripts/test-stage0.ps1`：失败即停止的验收入口，集成与浏览器测试使用明确开关。
 
 ## 实际环境
@@ -93,7 +93,7 @@ docker compose --project-directory . -f deploy/archive/stages/docker-compose.sta
 
 ## 用户验收步骤
 
-1. 打开 `http://127.0.0.1:4170/docs/ui/workbench.html?v=3` 或直接打开 HTML，确认参考图配色与对话应用布局。
+1. 打开 `http://127.0.0.1:4170/docs/archive/ui/workbench.html?v=3` 或直接打开 HTML，确认参考图配色与对话应用布局。
 2. 检查左上角 Logo 与左侧全部选项，切换 Agent、知识库、任务记录、设置与对话视图；切换主题、打开详情，手机使用左侧导航。
 3. 查看 `artifacts/` 中深浅主题的 360/768/1440 px 截图。
 4. 阅读架构、API 与 ADR，确认运行环境、权限设计和技术取舍。

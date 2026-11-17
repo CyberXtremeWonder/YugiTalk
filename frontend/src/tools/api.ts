@@ -23,7 +23,7 @@ export interface ToolEntry {
   name: string;
   title: string;
   description: string;
-  kind: "builtin" | "http";
+  kind: "builtin" | "http" | "mcp";
   number: number;
   version_id?: string;
   enabled: boolean;

@@ -1,3 +1,4 @@
+import { useNotice } from "../shared/useNotice";
 import { useEffect, useState } from "react";
 import { identityRequest, type Identity } from "../identity/api";
 import type { ToolConfig } from "./api";
@@ -15,7 +16,9 @@ export function ToolReviewPanel({ identity }: { identity: Identity }) {
   const [reasons, setReasons] = useState<Record<string, string>>({});
   const [cursor, setCursor] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [notice, setNotice] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [loadFailed, setLoadFailed] = useState(false);
+  const { notice, setNotice, noticeIsError, reportError } = useNotice();
   useEffect(() => {
     let active = true;
     void identityRequest<{ items: Submission[]; next_cursor: string | null }>(
@@ -28,7 +31,13 @@ export function ToolReviewPanel({ identity }: { identity: Identity }) {
         }
       })
       .catch((error) => {
-        if (active) setNotice(error.message);
+        if (active) {
+          setLoadFailed(true);
+          reportError(error.message);
+        }
+      })
+      .finally(() => {
+        if (active) setLoading(false);
       });
     return () => {
       active = false;
@@ -58,7 +67,7 @@ export function ToolReviewPanel({ identity }: { identity: Identity }) {
           : "已驳回，用户可查看审核意见后重新提交。",
       );
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "审核失败");
+      reportError(error instanceof Error ? error.message : "审核失败");
     } finally {
       setBusy(false);
     }
@@ -77,64 +86,109 @@ export function ToolReviewPanel({ identity }: { identity: Identity }) {
       setRows((items) => [...items, ...page.items]);
       setCursor(page.next_cursor);
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "列表加载失败");
+      reportError(error instanceof Error ? error.message : "列表加载失败");
     } finally {
       setBusy(false);
     }
   }
   return (
-    <section className="tool-editor" aria-labelledby="tool-review-title">
-      <h2 id="tool-review-title">工具提交审核</h2>
-      {!rows.length && <p>暂无待审核工具。</p>}
-      {rows.map((row) => (
-        <div className="account-settings" key={row.id}>
-          <h3>
-            {row.config.title} · {row.config.name}
-          </h3>
-          <p>{row.config.description}</p>
-          <p>
-            用户：{row.account_id} · 提交者：{row.submitter_id}
-          </p>
-          <details>
-            <summary>查看完整声明</summary>
-            <pre>{JSON.stringify(row.config, null, 2)}</pre>
-          </details>
-          <label>
-            审核意见
-            <textarea
-              aria-label={`审核意见 ${row.config.name}`}
-              value={reasons[row.id] || ""}
-              maxLength={500}
-              onChange={(event) =>
-                setReasons({ ...reasons, [row.id]: event.target.value })
-              }
-              disabled={busy}
-            />
-          </label>
-          <div className="skill-actions">
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => void review(row, "approved")}
-            >
-              批准
-            </button>
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => void review(row, "rejected")}
-            >
-              驳回
-            </button>
-          </div>
+    <section
+      className="tool-editor admin-review"
+      aria-labelledby="tool-review-title"
+      aria-busy={loading || busy}
+    >
+      <header className="admin-section-heading">
+        <div>
+          <h2 id="tool-review-title">工具提交审核</h2>
+          <p>核对工具声明，处理用户提交的审核申请。</p>
         </div>
-      ))}
+        {!loading && !loadFailed && (
+          <span className="admin-review-count">已加载 {rows.length} 项</span>
+        )}
+      </header>
+      {loading && <p role="status">正在加载待审核工具…</p>}
+      {!loading && !loadFailed && !rows.length && (
+        <div className="admin-review-empty">
+          <svg
+            width="32"
+            height="32"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <circle cx="12" cy="12" r="9" />
+            <path d="m8 12 3 3 5-6" />
+          </svg>
+          <strong>暂无待审核工具。</strong>
+          <p>新的工具提交会显示在这里。</p>
+        </div>
+      )}
+      <div className="admin-review-list">
+        {rows.map((row) => (
+          <article className="admin-review-card" key={row.id}>
+            <div className="admin-review-card-heading">
+              <h3>{row.config.title}</h3>
+              <code>{row.config.name}</code>
+            </div>
+            <p>{row.config.description}</p>
+            <dl className="admin-review-meta">
+              <div>
+                <dt>用户</dt>
+                <dd>{row.account_id}</dd>
+              </div>
+              <div>
+                <dt>提交者</dt>
+                <dd>{row.submitter_id}</dd>
+              </div>
+            </dl>
+            <details>
+              <summary>查看完整声明</summary>
+              <pre>{JSON.stringify(row.config, null, 2)}</pre>
+            </details>
+            <label>
+              审核意见
+              <textarea
+                aria-label={`审核意见 ${row.config.name}`}
+                placeholder="填写审核意见，驳回时必填"
+                rows={3}
+                value={reasons[row.id] || ""}
+                maxLength={500}
+                onChange={(event) =>
+                  setReasons({ ...reasons, [row.id]: event.target.value })
+                }
+                disabled={busy}
+              />
+            </label>
+            <div className="skill-actions admin-review-actions">
+              <button
+                className="admin-review-approve"
+                type="button"
+                disabled={busy}
+                onClick={() => void review(row, "approved")}
+              >
+                批准
+              </button>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => void review(row, "rejected")}
+              >
+                驳回
+              </button>
+            </div>
+          </article>
+        ))}
+      </div>
       {cursor && (
         <button type="button" disabled={busy} onClick={() => void more()}>
           加载更多待审工具
         </button>
       )}
-      {notice && <p role="status">{notice}</p>}
+      {notice && <p role={noticeIsError ? "alert" : "status"}>{notice}</p>}
     </section>
   );
 }

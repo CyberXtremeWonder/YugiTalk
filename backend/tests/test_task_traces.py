@@ -4,6 +4,7 @@ import asyncio
 import json
 import time
 from datetime import timedelta
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -22,7 +23,7 @@ from app.providers.client import HTTPProvider, Reply, ToolCall
 from app.rag.contracts import EvidenceGrade
 from app.rag.model import StructuredModel
 from app.tasks.execution import Execution, finish_run
-from app.tasks.models import Run
+from app.tasks.models import Run, RunEvent
 
 pytest_plugins = ["test_identity"]
 
@@ -32,6 +33,97 @@ def detail(client, key):
     response = client.get(f"/api/v1/admin/traces/{key}")
     assert response.status_code == 200, response.text
     return response.json()
+
+
+def test_latency_separates_public_text_queue_and_parallel_work(client):
+    _, _, task, _ = setup_task(client)
+    start = now() - timedelta(seconds=20)
+    with Session(client.app.state.database) as db:
+        run = db.get(Run, task["id"])
+        run.created_at, run.started_at = start, start + timedelta(seconds=8)
+        run.finished_at, run.status = start + timedelta(seconds=10), "succeeded"
+        for kind, duration, details in (
+            ("execution", 8000, {}),
+            ("llm", 6000, {"first_text_ms": 20, "reasoning_tokens": 3, "retry": 0}),
+            ("llm", 6000, {"retry": 1}),
+            ("llm", 1000, {"reasoning_tokens": 0, "correction": 1, "retry": 0}),
+            ("tool", 8000, {}),
+        ):
+            db.add(TraceStep(
+                run_id=run.id, kind=kind, name=kind, attempt=1, status="succeeded",
+                started_at=start + timedelta(seconds=2), duration_ms=duration, details=details,
+            ))
+        for seq, seconds, kind, text in (
+            (100, 1, "text_delta", ""), (101, 3, "checkpoint_restored", "private-candidate"),
+            (102, 5, "text_delta", "private-answer"), (103, 6, "text_delta", "more"),
+        ):
+            db.add(RunEvent(run_id=run.id, sequence=seq, kind=kind, payload={"text": text},
+                            created_at=start + timedelta(seconds=seconds)))
+        db.commit()
+    data = detail(client, task["id"])
+    assert data["latency"] == {
+        "queue_ms": 2000, "first_text_ms": 5000, "total_ms": 10000, "elapsed_ms": 10000,
+        "model_work_ms": 13000, "tool_work_ms": 8000, "model_retries": 1,
+        "model_corrections": 1, "reasoning_tokens": 3, "unknown_reasoning_calls": 1,
+    }
+    assert "private-" not in json.dumps(data)
+
+
+def test_queued_latency_does_not_invent_first_text_or_completion(client):
+    _, _, task, _ = setup_task(client)
+    data = detail(client, task["id"])
+    assert data["latency"]["first_text_ms"] is None
+    assert data["latency"]["total_ms"] is None
+    assert data["latency"]["queue_ms"] is None
+    assert data["latency"]["reasoning_tokens"] is None
+    assert data["latency"]["model_work_ms"] is None
+    assert data["latency"]["tool_work_ms"] is None
+    assert data["latency"]["elapsed_ms"] >= 0
+
+
+def test_resumed_latency_with_missing_first_attempt_keeps_queue_unknown(client):
+    _, _, task, _ = setup_task(client)
+    with Session(client.app.state.database) as db:
+        run = db.get(Run, task["id"])
+        run.started_at, run.attempts = now(), 2
+        db.add(TraceStep(run_id=run.id, kind="execution", name="resume", attempt=2))
+        db.commit()
+    assert detail(client, task["id"])["latency"]["queue_ms"] is None
+
+
+@pytest.mark.parametrize("reasoning", [0, 3, None, -1])
+def test_request_first_text_and_reasoning_usage_survive_retry(client, monkeypatch, reasoning):
+    _, _, task, _ = setup_task(client)
+    ticks = iter([0.0, 1.0, 1.125])
+    monkeypatch.setattr("app.providers.client.time", SimpleNamespace(
+        monotonic=lambda: next(ticks), sleep=lambda _: None,
+    ))
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        if len(requests) == 1:
+            return httpx.Response(503)
+        frame = {"choices": [{"delta": {"content": "private-text"}, "finish_reason": "stop"}],
+                 "usage": {"prompt_tokens": 10, "completion_tokens": 5,
+                           "completion_tokens_details": {"reasoning_tokens": reasoning}}}
+        return httpx.Response(200, text="data: " + json.dumps(frame) + "\n\ndata: [DONE]\n\n")
+
+    settings = Settings(_env_file=None, app_env="test", model_api_key="private-key",
+                        model_base_url="http://model.test", model_max_retries=1)
+    provider = HTTPProvider(settings, "openai_compatible", "test", httpx.MockTransport(respond))
+    with recording(client.app.state.database, task["id"], 1):
+        list(provider.stream([{"role": "user", "content": "private-question"}], [], 64))
+    data = detail(client, task["id"])
+    failed, succeeded = sorted(data["steps"], key=lambda step: step["details"]["retry"])
+    assert "first_text_ms" not in failed["details"]
+    assert succeeded["details"]["first_text_ms"] == 125
+    known = reasoning is not None and reasoning >= 0
+    assert succeeded["details"].get("reasoning_tokens") == (reasoning if known else None)
+    assert data["latency"]["model_retries"] == 1
+    assert data["latency"]["unknown_reasoning_calls"] == (1 if known else 2)
+    assert data["latency"]["first_text_ms"] is None
+    assert "private-" not in json.dumps(data)
 
 
 def test_task_records_memory_loops_tools_and_real_usage(client):

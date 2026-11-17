@@ -3,26 +3,34 @@
 import json
 import logging
 import re
+import time
 import traceback
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import timedelta
 from pathlib import Path
 from typing import Any, cast
 
+from billiard.exceptions import SoftTimeLimitExceeded  # type: ignore[import-untyped]
 from sqlalchemy import Engine, func, select
 from sqlalchemy.orm import Session
 
 from app.agents.contracts import AgentConfig, effective_config
-from app.agents.graph import run_graph
+from app.agents.graph import AgentState, run_graph
 from app.agents.model_config import model_settings
 from app.chat.models import Message
 from app.core.config import Settings
 from app.core.entities import identifier, now
 from app.identity.models import User
 from app.memory.context import build_messages
+from app.memory.summary import summarize_conversation
 from app.providers.client import HTTPProvider, Provider, ProviderFailure, ToolCall, create_provider
+from app.rag.model import StructuredModel
 from app.rag.pipeline import RagPipeline
+from app.tasks.ledger_models import ToolExecution
 from app.tasks.models import Budget, Run, RunEvent
+from app.tasks.notifications import notify_after_commit
 from app.tasks.reliability import (
     LeaseKeeper,
     execute_bound_tool,
@@ -53,6 +61,7 @@ def append_event(db: Session, run: Run, kind: str, payload: dict[str, object]) -
     """为任务分配递增序号，并在当前事务中追加公开事件。"""
     run.event_sequence += 1
     db.add(RunEvent(run_id=run.id, sequence=run.event_sequence, kind=kind, payload=payload))
+    notify_after_commit(db, run.id)
 
 
 def finish_run(
@@ -65,12 +74,12 @@ def finish_run(
     input_tokens: int | None,
     output_tokens: int | None,
     lease_token: str | None = None,
-) -> None:
+) -> bool:
     """在租约和父行锁保护下写入终态、保存回复并原子结算预算。"""
     with Session(engine) as db:
         previous = db.get(Run, key)
         if previous is None:
-            return
+            return True
         # 与创建任务使用相同父行锁顺序，预算结算与终态不可分割。
         db.scalar(select(User).where(User.id == previous.account_id).with_for_update())
         db.scalar(select(User).where(User.id == previous.owner_id).with_for_update())
@@ -81,14 +90,28 @@ def finish_run(
             .execution_options(populate_existing=True)
         )
         if run is None or run.status in {"succeeded", "failed", "cancelled"}:
-            return
+            return True
         # 已被接管的旧 Worker 无权结算；否则可能覆盖新 Worker 的结果或重复扣费。
         if lease_token is not None and (
             run.lease_token != lease_token or not run.lease_until or utc(run.lease_until) <= now()
         ):
-            return
+            return True
+        if lease_token is not None and run.status == "paused" and not run.cancel_requested:
+            return False
         if run.cancel_requested:
             status, error = "cancelled", "cancelled"
+        if status == "succeeded" and run.snapshot.get("steering"):
+            state = cast(dict[str, Any], run.checkpoint.get("state", {}))
+            if state.get("steering_cursor", 0) < len(cast(list[Any], run.snapshot["steering"])):
+                if state:
+                    # 与插话提交共用 Run 锁：最后一次模型调用之后到达的指令也不能静默丢失。
+                    run.checkpoint = {**run.checkpoint, "node": "model"}
+                    stop_slice(run)
+                    run.status, run.last_dispatched_at = "queued", None
+                    append_event(db, run, "run_state", {"status": "queued"})
+                    db.commit()
+                    return True
+                status, error = "failed", "steering_not_applied"
         run.status, run.error_code, run.finished_at = status, error, now()
         stop_slice(run)
         run.charged_tokens = max(run.charged_tokens, charged)
@@ -117,6 +140,15 @@ def finish_run(
             .where(ToolExecution.run_id == key, Approval.status == "pending")
         ):
             approval.status, approval.decided_at = "cancelled", now()
+        if status == "cancelled" and not text:
+            for event in db.scalars(
+                select(RunEvent).where(
+                    RunEvent.run_id == key,
+                    RunEvent.kind.in_(["text_delta", "checkpoint_restored"]),
+                ).order_by(RunEvent.sequence)
+            ):
+                fragment = str(event.payload.get("text", ""))
+                text = fragment if event.kind == "checkpoint_restored" else text + fragment
         if run.snapshot.get("knowledge_base_id") or run.snapshot.get("sources"):
             # 来源身份独立保存到 sources；成功、失败和取消的正文都不展示索引。
             text = re.sub(r"\[\s*S\d+\s*\]", "", text).strip()
@@ -166,6 +198,7 @@ def finish_run(
             },
         )
         db.commit()
+        return True
 
 
 class Execution:
@@ -175,13 +208,59 @@ class Execution:
         """保存实例所需的依赖与配置，初始化后续执行使用的状态。"""
         self.engine, self.settings, self.key = engine, settings, key
         self.token = identifier()
+        self._inflight: ContextVar[bool] = ContextVar("run_inflight", default=False)
+
+    @contextmanager
+    def inflight(self) -> Iterator[None]:
+        """有绝对截止时间的外部操作先保存结果，再在边界暂停；取消仍随时校验。"""
+        token = self._inflight.set(True)
+        try:
+            yield
+        finally:
+            self._inflight.reset(token)
+
+    def finish(self, text: str, inputs: int | None, outputs: int | None) -> None:
+        """与暂停竞争最终结算锁，暂停先提交时继续保留当前结果。"""
+        while True:
+            self.update()
+            if finish_run(
+                self.engine, self.key, "succeeded", None, text, 0, inputs, outputs, self.token
+            ):
+                return
+
+    def park_paused(self) -> bool:
+        """外部连接或 Worker 中断时释放本租约，让暂停任务可立即从检查点继续。"""
+        with Session(self.engine) as db:
+            run = db.scalar(select(Run).where(Run.id == self.key).with_for_update())
+            if run and run.status == "paused" and run.lease_token == self.token:
+                stop_slice(run)
+                db.commit()
+                return True
+        return False
 
     def check(self, db: Session, run: Run) -> None:
         """复核任务状态、租约、累计执行时间和用户当前权限。"""
-        if run.status != "running" or run.cancel_requested:
-            raise ProviderFailure("cancelled")
-        if run.lease_token != self.token or not run.lease_until or utc(run.lease_until) <= now():
-            raise ProviderFailure("lease_lost")
+        while True:
+            if run.status not in {"running", "paused"} or run.cancel_requested:
+                raise ProviderFailure("cancelled")
+            if (
+                run.lease_token != self.token or not run.lease_until
+                or utc(run.lease_until) <= now()
+            ):
+                raise ProviderFailure("lease_lost")
+            if run.status != "paused" or self._inflight.get():
+                break
+            # 等待期间释放事务与行锁，让继续、停止和后台续租都能及时获得数据库连接。
+            # 保留当前调用栈和模型迭代器，继续时不重新提交模型或重放工具。
+            db.rollback()
+            time.sleep(0.1)
+            current = db.scalar(
+                select(Run).where(Run.id == self.key).with_for_update()
+                .execution_options(populate_existing=True)
+            )
+            if current is None:
+                raise ProviderFailure("cancelled")
+            run = current
         elapsed = run.active_seconds + (
             (now() - utc(run.slice_started_at)).total_seconds() if run.slice_started_at else 0
         )
@@ -194,6 +273,16 @@ class Execution:
         from app.tools.service import check_tools
 
         check_tools(db, run.account_id, run.owner_id, run.snapshot, self.settings)
+        if "file_workspace" in run.snapshot:
+            from app.workspaces.execution import workspace_for_run
+
+            workspace_for_run(db, run, self.settings)
+        elif db.scalar(select(ToolExecution.id).where(
+            ToolExecution.run_id == run.id, ToolExecution.tool == "read_files",
+            ToolExecution.status == "succeeded",
+        ).limit(1)) is not None:
+            # 旧检查点可能直接恢复模型节点，不能让未绑定目录的旧文件结果进入上下文。
+            raise ProviderFailure("workspace_changed")
         if run.snapshot.get("skill"):
             from app.skills.service import validate_pin
 
@@ -310,8 +399,42 @@ class Execution:
             run.state_version += 1
             db.commit()
 
+    def steer(self, state: AgentState) -> bool:
+        """在主助手模型边界合并插话，与消息和消费游标一起持久化以便恢复。"""
+        self.update()
+        with Session(self.engine) as db:
+            run = db.scalar(select(Run).where(Run.id == self.key).with_for_update())
+            if run is None:
+                raise ProviderFailure("cancelled")
+            self.check(db, run)
+            instructions = cast(list[dict[str, Any]], run.snapshot.get("steering", []))
+            cursor = state.get("steering_cursor", 0)
+            if cursor >= len(instructions):
+                return False
+            state["messages"] = [*state["messages"], *[
+                {"role": "user", "content": "用户对当前任务的补充指令：\n" + item["message"]}
+                for item in instructions[cursor:]
+            ]]
+            state["steering_cursor"] = len(instructions)
+            payload = {**state, "calls": [call.model_dump() for call in state["calls"]]}
+            run.checkpoint = {**run.checkpoint, "node": "model", "state": payload}
+            run.state_version += 1
+            append_event(db, run, "tool_status", {"stage": "steering_applied"})
+            db.commit()
+            return True
+
     def tool(self, call: ToolCall, step: int) -> dict[str, object]:
         """在任务租约保护下执行许可工具，通过账本避免重复执行。"""
+        from app.tools.artifacts import ARTIFACT_TOOLS, build_files, save_files
+        from app.tools.http.torrent import TOOL_NAME as TORRENT_TOOL
+        from app.tools.http.torrent import download_torrent
+        from app.workspaces.execution import workspace_for_run
+        from app.workspaces.models import UserWorkspace
+
+        imported_workspace: UserWorkspace | None = None
+        artifact = call.name in ARTIFACT_TOOLS
+        torrent = call.name == TORRENT_TOOL
+        files: list[tuple[str, str, bytes]] = []
         with Session(self.engine) as db:
             run = db.scalar(select(Run).where(Run.id == self.key).with_for_update())
             if run is None:
@@ -324,27 +447,66 @@ class Execution:
 
                 trace_details(reused=True)
                 return item.result
-            if pin["kind"] == "builtin":
+            if pin["kind"] == "builtin" and call.name == "read_files":
+                workspace = workspace_for_run(db, run, self.settings)
+                if isinstance(workspace, UserWorkspace):
+                    # 导入快照从 S3 读取；解除会话绑定以在释放任务锁后使用已验证清单。
+                    db.expunge(workspace)
+                    imported_workspace = workspace
+            if (pin["kind"] == "builtin" and imported_workspace is None
+                    and not artifact and not torrent):
                 result = execute_bound_tool(db, run, call, step, self.settings)
                 self.check(db, run)
                 db.commit()
                 return result
-            # 只读查询的投递意图先持久化；网络期间不持有任务锁，可正常取消与续租。
+            # 网络工具的投递意图先持久化；请求期间不持有任务锁，可正常取消与续租。
+            tool_owner = run.owner_id
             db.commit()
-        from app.tools.http_runtime import execute_http
+        from app.tools.http.runtime import execute_http
 
-        result = execute_http(pin, call.arguments, self.settings, self.update)
-        with Session(self.engine) as db:
-            run = db.scalar(select(Run).where(Run.id == self.key).with_for_update())
-            if run is None:
-                raise ProviderFailure("cancelled")
-            self.check(db, run)
-            item, _ = prepare_bound_tool(db, run, call, step, self.settings)
-            item.status, item.result = (
-                ("succeeded" if result.get("ok") is not False else "failed"),
-                result,
-            )
-            db.commit()
+        with self.inflight():
+            if torrent:
+                result = download_torrent(
+                    call.arguments, self.settings, tool_owner, f"{self.key}:{step}:{call.id}",
+                    self.update,
+                )
+            elif artifact:
+                try:
+                    files = build_files(call.name, call.arguments, self.update)
+                    result = {"ok": True}
+                except ProviderFailure as exc:
+                    if not exc.code.startswith("tool_"):
+                        raise
+                    result = {"ok": False, "error_code": exc.code}
+            elif imported_workspace is not None:
+                from app.workspaces.imports import read_imported_file
+
+                result = read_imported_file(
+                    imported_workspace, str(call.arguments["path"]), self.settings,
+                )
+            elif pin["kind"] == "mcp":
+                from app.tools.mcp.service import execute
+
+                result = execute(
+                    self.engine, tool_owner, pin, call.arguments, self.settings,
+                    lambda: self.update(None, None, 0),
+                )
+            else:
+                result = execute_http(pin, call.arguments, self.settings, self.update)
+            with Session(self.engine) as db:
+                run = db.scalar(select(Run).where(Run.id == self.key).with_for_update())
+                if run is None:
+                    raise ProviderFailure("cancelled")
+                self.check(db, run)
+                item, _ = prepare_bound_tool(db, run, call, step, self.settings, completing=True)
+                if files:
+                    result = save_files(db, run, files)
+                item.status, item.result = (
+                    ("succeeded" if result.get("ok") is not False else "failed"),
+                    result,
+                )
+                db.commit()
+        self.update()
         return result
 
     def execute(self, factory: ProviderFactory = create_provider) -> None:
@@ -400,6 +562,18 @@ class Execution:
 
             connection_settings = model_settings(self.settings, config_data)
 
+            if config_data.get("research_project_id"):
+                from app.research.runner import ResearchRunner
+
+                provider = factory(
+                    connection_settings, str(config_data["provider"]), str(config_data["model"])
+                )
+                text, inputs, outputs = ResearchRunner(self, provider, config_data).run()
+                # 报告仅通过研究接口读取，避免聊天副本绕过来源撤销检查。
+                text = "研究报告已生成。"
+                self.finish(text, inputs, outputs)
+                return
+
             with trace_step("memory", "会话上下文与用户记忆读取"):
                 with Session(self.engine) as db:
                     run = db.get(Run, self.key)
@@ -413,7 +587,11 @@ class Execution:
                             cast(dict[str, Any], checkpoint["state"])["messages"],
                         )
                         if checkpoint and checkpoint.get("node") != "rag"
-                        else build_messages(db, run)
+                        else build_messages(db, run, lambda payload: summarize_conversation(
+                            factory(connection_settings, str(config_data["provider"]),
+                                    str(config_data["model"])),
+                            connection_settings, payload, self.update,
+                        ), settings=connection_settings)
                     )
                     db.commit()
             if config_data.get("skill"):
@@ -448,8 +626,12 @@ class Execution:
                     str(config_data["knowledge_base_id"]),
                     self.update,
                     self.save_rag,
+                    model=StructuredModel(rag_settings, self.update, role_settings=self.settings),
                 )
-                state = pipeline.run(prompt, cast(dict[str, Any] | None, checkpoint.get("rag")))
+                with self.inflight():
+                    state = pipeline.run(
+                        prompt, cast(dict[str, Any] | None, checkpoint.get("rag"))
+                    )
                 if state["phase"] == "clarify":
                     # save_rag 已将任务保存为 waiting_input，等待前端补充信息后继续。
                     return
@@ -458,9 +640,7 @@ class Execution:
                 if not sources:
                     # 选定知识库后禁止用模型通用知识兜底，无有效证据时直接结束。
                     text = "没有相关知识"
-                    finish_run(
-                        self.engine, self.key, "succeeded", None, text, 0, None, None, self.token
-                    )
+                    self.finish(text, None, None)
                     return
                 messages[-1] = {**messages[-1], "content": state["question"]}
                 messages.insert(
@@ -487,11 +667,12 @@ class Execution:
             # 快照还包含连接、检索和资源版本信息；这里只取执行图需要的助手配置字段。
             config = AgentConfig.model_validate(
                 {
-                    key: value
+                    key: min(int(str(value)), 300) if key == "timeout_seconds" else value
                     for key, value in config_data.items()
                     if key
                     not in {
                         "api_key_encrypted",
+                        "conversation_upto_sequence",
                         "provider",
                         "model",
                         "knowledge_base_id",
@@ -505,6 +686,9 @@ class Execution:
                         "tool_catalog",
                         "router_mode",
                         "direct_mode",
+                        "file_workspace",
+                        "uploaded_files",
+                        "steering",
                     }
                 }
             )
@@ -543,10 +727,7 @@ class Execution:
                     messages, checkpoint, collect,
                 )
                 text = result["text"]
-                finish_run(
-                    self.engine, self.key, "succeeded", None, text, 0,
-                    result["input_tokens"], result["output_tokens"], self.token,
-                )
+                self.finish(text, result["input_tokens"], result["output_tokens"])
                 return
 
             # 执行图负责模型/工具顺序；以下回调把事件、文本、检查点和工具账本接回数据库。
@@ -562,14 +743,14 @@ class Execution:
                 str(checkpoint.get("node", "model")),
                 self.save,
                 self.tool,
+                steer=self.steer,
             )
-            if config.closed_loop:
-                text = result["text"]
+            text = result["text"]
             inputs, outputs = result["input_tokens"], result["output_tokens"]
-            finish_run(
-                self.engine, self.key, "succeeded", None, text, 0, inputs, outputs, self.token
-            )
+            self.finish(text, inputs, outputs)
         except ProviderFailure as failure:
+            if self.park_paused():
+                return
             if failure.code == "lease_lost":
                 # 失去租约后立即退出，把任务结果交给当前持有租约的执行者处理。
                 return
@@ -584,8 +765,17 @@ class Execution:
                 outputs,
                 self.token,
             )
+        except SoftTimeLimitExceeded:
+            if self.park_paused():
+                return
+            finish_run(
+                self.engine, self.key, "failed", "run_timeout", text, 0,
+                inputs, outputs, self.token,
+            )
         except Exception as error:
             log_execution_failure(self.key, error)
+            if self.park_paused():
+                return
             finish_run(
                 self.engine,
                 self.key,

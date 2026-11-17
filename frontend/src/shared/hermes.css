@@ -1,17 +1,17 @@
-/* 参考用户提供的 Hermes 截图，统一轻量工作台的颜色与布局。 */
+/* 蓝白知识工作台：侧栏、卡片和图谱共用主题色与交互状态。 */
 :root,
 [data-theme="light"] {
-  --canvas: #edf1f6;
+  --canvas: #f5f8ff;
   --bg: #ffffff;
-  --sidebar: #fafbfe;
+  --sidebar: #f2f7ff;
   --surface: #ffffff;
-  --text: #252d3d;
-  --muted: #717d92;
-  --line: #e5ebf4;
-  --active: #eaf2ff;
-  --accent: #242a35;
+  --text: #182744;
+  --muted: #6c7f9e;
+  --line: #dfe8f6;
+  --active: #edf4ff;
+  --accent: #2467f6;
   --accent-ink: #ffffff;
-  --orange: #477ee8;
+  --orange: #2467f6;
   --icon: #ffffff;
 }
 [data-theme="dark"] {
@@ -23,39 +23,39 @@
   --muted: #a0adc1;
   --line: #2a374b;
   --active: #233957;
-  --accent: #e4eaf5;
-  --accent-ink: #151c29;
+  --accent: #377dff;
+  --accent-ink: #ffffff;
   --orange: #94baff;
   --icon: #151c29;
 }
 body {
-  padding: 12px;
+  padding: 0;
   background: var(--canvas);
   font-size: 14px;
 }
 .app-shell {
-  grid-template-columns: 218px minmax(0, 1fr);
-  border-radius: 12px;
-  box-shadow: 0 12px 48px #10223b14;
+  grid-template-columns: 216px minmax(0, 1fr);
+  border-radius: 0;
+  box-shadow: none;
 }
 .sidebar {
-  padding: 18px 12px 12px;
-  gap: 14px;
+  padding: 22px 12px 14px;
+  gap: 16px;
   border-right-color: var(--line);
 }
 .brand {
-  font-size: 19px;
-  font-weight: 600;
+  font-size: 23px;
+  font-weight: 700;
   letter-spacing: -0.5px;
   gap: 8px;
   margin: 0 6px;
 }
 .brand-mark {
-  width: 26px;
-  height: 26px;
+  width: 31px;
+  height: 31px;
   font-size: 14px;
   font-weight: 600;
-  border-radius: 7px;
+  border-radius: 8px;
   letter-spacing: -1px;
 }
 .brand-dot {
@@ -76,22 +76,24 @@ body {
   background: transparent;
   color: var(--text);
   border: 1px solid var(--line);
-  border-radius: 6px;
-  padding: 8px 10px;
+  border-radius: 8px;
+  padding: 11px 12px;
   font-weight: 500;
 }
 .new-chat:hover {
   background: var(--active);
 }
 nav button {
-  padding: 7px 9px;
-  font-size: 12px;
-  border-radius: 5px;
-  gap: 8px;
+  padding: 10px 11px;
+  font-size: 13px;
+  border-radius: 7px;
+  gap: 11px;
 }
 nav button[aria-current] {
-  color: var(--orange);
-  font-weight: 500;
+  color: #ffffff;
+  background: #2e72fa;
+  font-weight: 600;
+  box-shadow: 0 3px 9px #2467f61a;
 }
 .nav-icon {
   width: 20px;
@@ -102,7 +104,7 @@ nav button[aria-current] {
   color: var(--muted);
 }
 nav button[aria-current] .nav-icon {
-  color: var(--orange);
+  color: #ffffff;
 }
 .history {
   padding: 0 3px;
@@ -110,9 +112,9 @@ nav button[aria-current] .nav-icon {
   flex: 1 1 90px;
 }
 .history h2 {
-  color: var(--orange);
+  color: var(--muted);
   font-weight: 600;
-  letter-spacing: 1.5px;
+  letter-spacing: 0;
   margin-bottom: 8px;
 }
 .history button {
@@ -142,7 +144,7 @@ nav button[aria-current] .nav-icon {
   font-size: 11px;
 }
 .topbar {
-  min-height: 48px;
+  min-height: 54px;
   padding: 0 24px;
   border-bottom: 1px solid var(--line);
 }
@@ -291,8 +293,8 @@ nav button[aria-current] .nav-icon {
   padding-top: 28px;
 }
 .secondary-view h1 {
-  font-size: 26px;
-  font-weight: 500;
+  font-size: 28px;
+  font-weight: 700;
   letter-spacing: -0.5px;
 }
 .view-symbol {

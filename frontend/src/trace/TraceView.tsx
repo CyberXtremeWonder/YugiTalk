@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { runError } from "../tasks/errors";
 import {
   fetchTrace,
   fetchTraces,
@@ -24,12 +25,17 @@ const names: Record<string, string> = {
   rag_rerank: "结果重排",
   rag_grade: "证据评判",
   rag_rewrite: "查询改写",
-  rag_synthesis: "证据合成",
+  rag_synthesis: "整理检索证据",
 };
 
 /** 缺失的供应商用量不转换为零。 */
 export function tokenLabel(value: number | null): string {
   return value === null ? "未知" : value.toLocaleString("zh-CN");
+}
+
+/** 未收到正文或任务未结束时保持未知，零毫秒是有效值。 */
+export function durationLabel(value: number | null | undefined): string {
+  return value == null ? "未知" : `${(value / 1000).toFixed(2)}s`;
 }
 
 /** 步骤条使用实际起止时间，父步骤和子步骤不会累计为总耗时。 */
@@ -84,6 +90,17 @@ function StepRow({
       <span className="trace-step-name">
         {label}
         <small>{info}</small>
+        {step.kind === "llm" && (
+          <small>
+            {step.details.purpose ? `${step.details.purpose} · ` : ""}
+            模型首段文本{" "}
+            {durationLabel(
+              typeof step.details.first_text_ms === "number"
+                ? step.details.first_text_ms
+                : null,
+            )}
+          </small>
+        )}
       </span>
       <span className={`trace-status ${step.status}`}>
         {statuses[step.status] || step.status}
@@ -185,9 +202,13 @@ export function TraceView() {
           setError("");
           if (
             !paused &&
-            ["running", "queued", "waiting_input", "waiting_approval"].includes(
-              data.run.status,
-            )
+            [
+              "running",
+              "queued",
+              "paused",
+              "waiting_input",
+              "waiting_approval",
+            ].includes(data.run.status)
           )
             timeout = setTimeout(update, 3000);
         }
@@ -243,11 +264,17 @@ export function TraceView() {
               aria-current={selected === run.id ? "true" : undefined}
               onClick={() => setSelected(run.id)}
             >
-              <strong>{run.model}</strong>
+              <strong
+                className="trace-prompt"
+                title={run.prompt_preview || run.model}
+              >
+                {run.prompt_preview || run.model}
+              </strong>
               <span className={`trace-status ${run.status}`}>
                 {statuses[run.status] || run.status}
               </span>
               <small>{new Date(run.created_at).toLocaleString("zh-CN")}</small>
+              {run.prompt_preview && <small>{run.model}</small>}
               <code>{run.id.slice(0, 8)}</code>
             </button>
           ))}
@@ -289,11 +316,66 @@ export function TraceView() {
                 </span>
               </div>
               {detail.run.error_code && (
-                <p className="trace-error">任务错误：{detail.run.error_code}</p>
+                <p className="trace-error">
+                  任务错误：
+                  {detail.run.error_code === "context_limit"
+                    ? runError(detail.run.error_code)
+                    : detail.run.error_code}
+                </p>
               )}
               <p className="trace-model">
                 {detail.run.provider} / {detail.run.model}
               </p>
+              {detail.latency && (
+                <div className="trace-metrics" aria-label="对话耗时">
+                  <span>
+                    <strong>
+                      {durationLabel(detail.latency.first_text_ms)}
+                    </strong>
+                    首段正文（服务端）
+                  </span>
+                  <span>
+                    <strong>{durationLabel(detail.latency.total_ms)}</strong>
+                    整轮耗时
+                  </span>
+                  <span>
+                    <strong>{durationLabel(detail.latency.elapsed_ms)}</strong>
+                    已用时间
+                  </span>
+                  <span>
+                    <strong>{durationLabel(detail.latency.queue_ms)}</strong>
+                    首次排队
+                  </span>
+                  <span title="累计各模型请求的耗时，可能与工具耗时重叠">
+                    <strong>
+                      {durationLabel(detail.latency.model_work_ms)}
+                    </strong>
+                    模型累计
+                  </span>
+                  <span title="并行工具耗时累计，不能与模型累计相加作为整轮耗时">
+                    <strong>
+                      {durationLabel(detail.latency.tool_work_ms)}
+                    </strong>
+                    工具累计
+                  </span>
+                  <span>
+                    <strong>
+                      {detail.latency.model_retries} /{" "}
+                      {detail.latency.model_corrections}
+                    </strong>
+                    请求重试 / 格式纠正
+                  </span>
+                  <span>
+                    <strong>
+                      {tokenLabel(detail.latency.reasoning_tokens)}
+                    </strong>
+                    思考 Token
+                    {detail.latency.unknown_reasoning_calls > 0
+                      ? "（部分或全部未知）"
+                      : ""}
+                  </span>
+                </div>
+              )}
               {detail.summary.recorded ? (
                 <>
                   <div className="trace-metrics">

@@ -1,4 +1,4 @@
-"""按页将相邻叶子组织成三子一父，保留重叠文本的真实原文范围。"""
+"""保存解析器生成的独立父块，并兼容旧版三子一父关系。"""
 
 from typing import Any
 from uuid import NAMESPACE_URL, uuid5
@@ -25,20 +25,26 @@ def join_overlaps(texts: list[str]) -> str:
     return result
 
 
-def attach_parents(db: Session, document: str, version: int, parts: list[dict[str, Any]]) -> None:
+def attach_parents(
+    db: Session, document: str, version: int, parts: list[dict[str, Any]],
+    ordinal_offset: int = 0,
+) -> None:
     """写入确定性父级身份，并给每个叶子标注经过校验的父级关系。"""
     groups: list[list[dict[str, Any]]] = []
     for part in parts:
-        # 父块最多包含三个叶子，且不能跨页或跨 Markdown 章节。
+        # 新策略使用解析时生成的父块身份；旧策略沿用最多三子一父。
         if (
             not groups
-            or len(groups[-1]) == 3
             or groups[-1][0]["page"] != part["page"]
-            or groups[-1][0].get("section") != part.get("section")
+            or (
+                groups[-1][0].get("parent_group") != part.get("parent_group")
+                if "parent_group" in part
+                else len(groups[-1]) == 3 or groups[-1][0].get("section") != part.get("section")
+            )
         ):
             groups.append([])
         groups[-1].append(part)
-    for ordinal, group in enumerate(groups, 1):
+    for ordinal, group in enumerate(groups, ordinal_offset + 1):
         parent_id = str(uuid5(NAMESPACE_URL, f"{document}:{version}:parent:{ordinal}"))
         db.add(
             ParentChunk(
@@ -47,7 +53,11 @@ def attach_parents(db: Session, document: str, version: int, parts: list[dict[st
                 index_version=version,
                 ordinal=ordinal,
                 page=group[0]["page"],
-                content=join_overlaps([part["content"] for part in group]),
+                content=(
+                    group[0]["parent_content"]
+                    if "parent_group" in group[0]
+                    else join_overlaps([part["content"] for part in group])
+                ),
                 child_count=len(group),
             )
         )

@@ -1,0 +1,32 @@
+{
+  "verified_at": "2026-11-04T17:26:49.755779+08:00",
+  "aria2_version": "aria2 version 1.37.0",
+  "scope": "isolated local tracker + HTTPS + real BitTorrent peers",
+  "private_url_denied": true,
+  "fixture_override": "Only HTTPS fixture DNS; TLS verification enabled",
+  "downloads": [
+    {
+      "source": "torrent",
+      "states": [
+        "active",
+        "complete"
+      ],
+      "completed_bytes": 524288,
+      "sha256": "4ab65e0ce6ff6cbf1631cc012e525472a0c231af27658e5028e17475400d9716",
+      "cross_user_denied": true,
+      "duplicate_gid_rejected": true
+    },
+    {
+      "source": "magnet",
+      "states": [
+        "active",
+        "complete"
+      ],
+      "completed_bytes": 524288,
+      "sha256": "4ab65e0ce6ff6cbf1631cc012e525472a0c231af27658e5028e17475400d9716",
+      "cross_user_denied": true,
+      "duplicate_gid_rejected": true
+    }
+  ],
+  "ok": true
+}

@@ -29,6 +29,56 @@ def s3_values() -> dict[str, str]:
     }
 
 
+@pytest.mark.parametrize("origin", ["https://agent.example.org", "https://agent.example.org:8443"])
+def test_production_initialization_renders_origin_and_preserves_configuration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, origin: str
+) -> None:
+    """真实初始化渲染HTTPS跳转；重复执行保留配置，来源变更不得静默覆盖。"""
+    initializer = runpy.run_path(str(ROOT / "scripts/init-production.py"))
+    monkeypatch.setitem(initializer["initialize"].__globals__, "ROOT", tmp_path)
+    deploy = tmp_path / "deploy"
+    deploy.mkdir()
+    (deploy / "nginx.production.conf").write_text(
+        (ROOT / "deploy/nginx.production.conf").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    values = s3_values() | {
+        "PROD_DATA_ROOT": "data/production",
+        "PUBLIC_ORIGIN": origin,
+        "STORAGE_ACCESS_KEY": "test-access-key",
+        "STORAGE_SECRET_KEY": "test-storage-secret-only",
+    }
+    for name in (
+        "POSTGRES_PASSWORD",
+        "REDIS_PASSWORD",
+        "MILVUS_PASSWORD",
+        "SESSION_SECRET",
+        "METRICS_TOKEN",
+        "EMBEDDING_API_KEY",
+    ):
+        values[name] = "test-" + name.lower() + "-" + "s" * 32
+    environment = tmp_path / "production.env"
+    environment.write_text(
+        "\n".join(f"{key}={value}" for key, value in values.items()), encoding="utf-8"
+    )
+
+    directory = initializer["initialize"](environment)
+    assert directory == tmp_path / "data/production"
+    nginx = directory / "config/nginx.conf"
+    original = nginx.read_text(encoding="utf-8")
+    assert f"return 308 {origin}$request_uri;" in original
+    assert "__PUBLIC_ORIGIN__" not in original
+    assert initializer["initialize"](environment) == directory
+    assert nginx.read_text(encoding="utf-8") == original
+
+    environment.write_text(
+        environment.read_text(encoding="utf-8").replace(origin, "https://changed.example.org"),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="私有配置已存在且内容不同"):
+        initializer["initialize"](environment)
+    assert nginx.read_text(encoding="utf-8") == original
+
+
 @pytest.mark.parametrize(
     "overrides",
     [

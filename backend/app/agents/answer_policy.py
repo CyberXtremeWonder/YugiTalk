@@ -5,6 +5,7 @@ import re
 from typing import Any
 
 from app.providers.client import ProviderFailure
+from app.rag.prompts import load_prompt
 
 
 def evidence_policy(messages: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -34,20 +35,12 @@ def evidence_policy(messages: list[dict[str, Any]]) -> dict[str, Any] | None:
 
 
 def answer_instruction(policy: dict[str, Any]) -> str:
-    """三个覆盖分支互斥，空来源不会继续携带要求引用资料的生成指令。"""
-    common = "来源由应用卡片展示，不输出来源链接或 [S1] 等索引，不编造 evidence_id。"
-    common += "复用已有证据，证据足够时直接回答；仅对明确的事实缺口补查，不重复相同查询。"
-    if policy["coverage"] == "none":
-        return (
-            "本次检索无有效证据。仅简短说明检索限制，不声称文件不存在，"
-            "不编造资料结论，不以通用长文替代知识库回答。" + common
-        )
-    if policy["coverage"] == "partial":
-        return (
-            "资料仅部分支持问题。只回答有原文支持的部分，明确标注未覆盖内容，不扩展主题。"
-            + common
-        )
-    return "仅依据有效资料回答当前问题，保持简洁。" + common
+    """按证据覆盖程度读取对应回答指令，不缓存文件内容。"""
+    coverage = policy["coverage"]
+    name = {"none": "answer_none", "partial": "answer_partial"}.get(
+        coverage, "answer_sufficient"
+    )
+    return load_prompt(name)
 
 
 def validate_references(text: str, policy: dict[str, Any]) -> None:

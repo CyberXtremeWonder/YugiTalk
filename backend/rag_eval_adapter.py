@@ -1,11 +1,19 @@
 """为手动评测提供完整 RAG 的 HTTP 调用适配，不绕过用户授权与任务流程。"""
 
 import os
-from contextlib import contextmanager
 import time
+from contextlib import contextmanager
 from uuid import uuid4
 
 import httpx
+
+
+class RagNeedsClarification(RuntimeError):
+    """评测不补充额外答案；记录澄清并释放该题任务占用。"""
+
+    def __init__(self, result: dict) -> None:
+        super().__init__("rag_needs_clarification")
+        self.result = result
 
 
 def config(name: str) -> str:
@@ -55,16 +63,20 @@ def _call_rag(client: httpx.Client, headers: dict, question: str) -> dict:
     )
     response.raise_for_status()
     conversation = response.json()["id"]
-    response = client.post(
-        "/api/v1/runs",
-        json={
+    body = {
             "conversation_id": conversation,
             "agent_version_id": config("RAG_TEST_AGENT_VERSION_ID"),
             "message": question,
             "knowledge_base_id": config("RAG_TEST_KNOWLEDGE_BASE_ID"),
-        },
-        headers={**headers, "Idempotency-Key": str(uuid4())},
-    )
+        }
+    task_headers = {**headers, "Idempotency-Key": str(uuid4())}
+    for attempt in range(4):
+        response = client.post("/api/v1/runs", json=body, headers=task_headers)
+        if response.status_code != 429 or response.json().get("detail", {}).get(
+            "code"
+        ) != "run_concurrency_exceeded" or attempt == 3:
+            break
+        time.sleep(min(2 ** attempt, 5))
     response.raise_for_status()
     run_id = response.json()["id"]
     deadline = time.monotonic() + 360
@@ -80,8 +92,18 @@ def _call_rag(client: httpx.Client, headers: dict, question: str) -> dict:
             answers = [row for row in response.json()["items"] if row["role"] == "assistant"]
             if not answers:
                 raise RuntimeError("任务完成但未保存答案")
-            return {"answer": answers[-1]["content"], "sources": answers[-1]["sources"]}
-        if run["status"] in {"failed", "cancelled", "waiting_input", "waiting_approval"}:
+            return {
+                "answer": answers[-1]["content"], "sources": answers[-1]["sources"],
+                "run_id": run_id, "conversation_id": conversation, "model": run.get("model"),
+            }
+        if run["status"] in {"waiting_input", "waiting_approval"}:
+            client.post(f"/api/v1/runs/{run_id}/cancel", headers=headers).raise_for_status()
+            if run["status"] == "waiting_input":
+                raise RagNeedsClarification({
+                    "run_id": run_id, "conversation_id": conversation,
+                    "model": run.get("model"), "run_status": "waiting_input",
+                })
+        if run["status"] in {"failed", "cancelled", "waiting_approval"}:
             raise RuntimeError(
                 f"任务未完成：{run['status']} / {run.get('error_code')}；"
                 f"run_id={run_id}；model={run.get('model')}；"

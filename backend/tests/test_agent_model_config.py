@@ -16,6 +16,70 @@ from app.tasks.models import Run
 pytest_plugins = ["test_identity"]
 
 
+@pytest.mark.parametrize("environment,allowed", [("development", True), ("production", False)])
+def test_local_http_policy_reaches_actual_stream_adapter(client, environment, allowed):
+    """发布允许的本机地址必须也能进入请求层，正式环境不得投递 HTTP 请求。"""
+    from pydantic import SecretStr
+
+    from app.providers.client import ProviderFailure
+
+    settings = client.app.state.settings.model_copy(update={
+        "app_env": environment, "model_base_url": "http://host.docker.internal:11434/v1",
+        "model_api_key": SecretStr("ollama"),
+    })
+    requests = []
+
+    def respond(request):
+        """只替换网络，保持流式消息编码和解码实际运行。"""
+        requests.append(request)
+        return httpx.Response(200, text=(
+            'data: {"choices":[{"delta":{"content":"你好"},"finish_reason":"stop"}]}\n\n'
+            'data: [DONE]\n\n'
+        ))
+
+    provider = HTTPProvider(settings, "openai_compatible", "qwen3.5:9b",
+                            httpx.MockTransport(respond))
+    if allowed:
+        events = list(provider.stream([{"role": "user", "content": "你好"}], [], 32))
+        assert any(event.text == "你好" for event in events)
+        assert len(requests) == 1
+    else:
+        with pytest.raises(ProviderFailure, match="model_configuration"):
+            list(provider.stream([{"role": "user", "content": "你好"}], [], 32))
+        assert not requests
+
+
+@pytest.mark.parametrize("environment,url,expected", [
+    ("development", "http://host.docker.internal:11434/v1", 201),
+    ("development", "http://localhost:11434/v1", 201),
+    ("development", "http://127.0.0.1:11434/v1", 201),
+    ("development", "http://[::1]:11434/v1", 201),
+    ("development", "https://model.example.test/v1", 201),
+    ("development", "http://model.example.test/v1", 422),
+    ("production", "http://host.docker.internal:11434/v1", 422),
+    ("production", "https://model.example.test/v1", 201),
+])
+def test_local_ollama_http_publish_boundary(client, environment, url, expected):
+    """开发本机模型可以发布，公网和正式环境的 HTTPS 校验仍然生效。"""
+    from test_identity import ORIGIN, login
+
+    identity = login(client)
+    client.app.state.settings.app_env = environment
+    response = client.post("/api/v1/me/agents", headers={
+        **ORIGIN, "X-CSRF-Token": identity["csrf_token"],
+    }, json={"name": "本机模型", "provider": "openai_compatible", "model": "qwen3.5:9b",
+             "base_url": url, "api_key": "ollama"})
+    assert response.status_code == expected, response.text
+    if expected == 422:
+        assert response.json()["code"] == "model_url_requires_https"
+    else:
+        version = client.post(f"/api/v1/agents/{response.json()['id']}/versions", headers={
+            **ORIGIN, "X-CSRF-Token": identity["csrf_token"],
+        }, json={"name": "本机模型", "provider": "openai_compatible", "model": "qwen3.5:9b",
+                 "base_url": url, "api_key": ""})
+        assert version.status_code == 201
+
+
 @pytest.mark.parametrize("protocol", ["openai_compatible", "anthropic"])
 def test_agent_model_connection_and_secret(client, protocol):
     """真实适配器按助手版本选择地址、认证方式和模型，响应不泄漏密钥。"""
@@ -25,6 +89,7 @@ def test_agent_model_connection_and_secret(client, protocol):
         model="custom-model",
         base_url="https://custom.example.test/v1",
         api_key="private-model-key",
+        token_budget=100000,
     )
     listing = client.get("/api/v1/me/agents")
     assert "private-model-key" not in listing.text
@@ -157,6 +222,7 @@ def test_switch_provider_keeps_queued_task_credentials(client):
         model="first-model",
         base_url="https://first.example.test/v1",
         api_key="first-key",
+        token_budget=100000,
     )
     published = client.post(
         f"/api/v1/agents/{agent['id']}/versions",
@@ -167,6 +233,7 @@ def test_switch_provider_keeps_queued_task_credentials(client):
             "model": "second-model",
             "base_url": "https://second.example.test/v1",
             "api_key": "second-key",
+            "token_budget": 60000,
         },
     )
     assert published.status_code == 201
@@ -180,6 +247,8 @@ def test_switch_provider_keeps_queued_task_credentials(client):
         return MockProvider()
 
     settings = client.app.state.settings
+    settings.workspace_token_budget = 1000000
+    settings.user_token_budget = 1000000
     settings.model_id = "changed-server-default"
     Execution(client.app.state.database, settings, first["id"]).execute(factory)
     assert client.get(f"/api/v1/runs/{first['id']}").json()["status"] == "succeeded"
@@ -192,7 +261,8 @@ def test_switch_provider_keeps_queued_task_credentials(client):
     )
     assert second.status_code == 202, second.text
     Execution(client.app.state.database, settings, second.json()["id"]).execute(factory)
-    assert client.get(f"/api/v1/runs/{second.json()['id']}").json()["status"] == "succeeded"
+    second_result = client.get(f"/api/v1/runs/{second.json()['id']}").json()
+    assert second_result["status"] == "succeeded", second_result.get("error_code")
     assert calls == [
         ("openai_compatible", "first-model", "https://first.example.test/v1", "first-key"),
         ("anthropic", "second-model", "https://second.example.test/v1", "second-key"),

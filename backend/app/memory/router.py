@@ -22,6 +22,7 @@ class MemoryInput(BaseModel):
 
     content: str = Field(min_length=1, max_length=1000)
     confirmed: bool = False
+    importance: int = Field(default=3, ge=1, le=5, strict=True)
 
 
 class PreferenceInput(BaseModel):
@@ -53,7 +54,9 @@ def memories(account_id: AccountId, db: DB, actor: Actor) -> dict[str, Any]:
         if enabled
         else []
     )
-    return {"enabled": enabled, "items": [{"id": row.id, "content": row.content} for row in rows]}
+    return {"enabled": enabled, "items": [
+        {"id": row.id, "content": row.content, "importance": row.importance} for row in rows
+    ]}
 
 
 @router.patch("/me/memory-preference")
@@ -111,12 +114,13 @@ def save_memory(account_id: AccountId, data: MemoryInput, db: DB, actor: Writer)
     )
     if count >= 20:
         raise HTTPException(409)
-    row = Memory(account_id=key, user_id=actor.user.id, content=validate_memory(data))
+    row = Memory(account_id=key, user_id=actor.user.id, content=validate_memory(data),
+                 importance=data.importance)
     db.add(row)
     db.flush()
     audit(db, actor.user, "memory.create", key, row.id)
     db.commit()
-    return {"id": row.id, "content": row.content}
+    return {"id": row.id, "content": row.content, "importance": row.importance}
 
 
 @router.patch("/memories/{memory_id}")
@@ -132,9 +136,11 @@ def edit_memory(memory_id: UUID, data: MemoryInput, db: DB, actor: Writer) -> di
     if choice and not choice.enabled:
         raise HTTPException(409, detail={"code": "memory_disabled"})
     row.content = validate_memory(data)
+    if "importance" in data.model_fields_set:
+        row.importance = data.importance
     audit(db, actor.user, "memory.update", row.account_id, row.id)
     db.commit()
-    return {"id": row.id, "content": row.content}
+    return {"id": row.id, "content": row.content, "importance": row.importance}
 
 
 @router.delete("/memories/{memory_id}", status_code=204)

@@ -15,7 +15,12 @@ def ping() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@celery_app.task(name="yugitalk.agent.execute")  # type: ignore[untyped-decorator]
+@celery_app.task(  # type: ignore[untyped-decorator]
+    name="yugitalk.agent.execute",
+    # 研究模式允许至多 30 分钟；普通任务仍由 Execution.check 按其快照提前终止。
+    soft_time_limit=max(settings.task_timeout_seconds, 1800),
+    time_limit=max(settings.task_timeout_seconds, 1800) + 10,
+)
 def execute_agent(run_id: str) -> None:
     """只传递运行 ID，敏感提示词不进入队列参数或结果后端。"""
     engine, settings = database.get()

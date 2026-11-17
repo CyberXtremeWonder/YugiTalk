@@ -9,6 +9,9 @@ export function processStep(event: RunEvent): string | null {
   if (event.type === "error")
     return event.payload.error_code === "cancelled" ? "已停止" : "任务未完成";
   if (event.type !== "tool_status") return null;
+  if (event.payload.stage === "steering_queued")
+    return "已收到插话，等待后续处理";
+  if (event.payload.stage === "steering_applied") return "已将插话加入当前任务";
   if (event.payload.stage === "subagent")
     return event.payload.status === "succeeded"
       ? "执行助手已完成任务"
@@ -38,24 +41,21 @@ export function processStep(event: RunEvent): string | null {
       .join("；");
     return `检查${verdict}：${checks}`;
   }
-  const ragStages: Record<string, string> = {
-    rag_plan: "判断问题与拆分检索",
-    rag_retrieve: "并行检索资料",
-    rag_rerank:
-      event.payload.status === "fallback" ||
-      event.payload.status === "circuit_open"
-        ? "沿用融合结果"
-        : "融合与可选重排",
-    rag_grade: "核对证据是否充分",
-    rag_rewrite: "调整查询后再检索一次",
-    rag_synthesis: "合成答案与来源",
-    rag_resume: "根据补充信息恢复",
-  };
-  if (event.payload.stage && ragStages[event.payload.stage])
-    return ragStages[event.payload.stage];
-  if (event.payload.stage === "retrieval") return "检索授权知识库";
+  if (
+    event.payload.stage === "tool" &&
+    event.payload.name === "knowledge_search" &&
+    event.payload.status === "succeeded"
+  )
+    return "知识库检索结束";
+  if (
+    event.payload.stage?.startsWith("rag_") ||
+    event.payload.stage === "retrieval" ||
+    (event.payload.stage === "tool" &&
+      event.payload.name === "knowledge_search")
+  )
+    return "检索知识库";
   if (event.payload.stage === "running") return "理解任务";
-  if (event.payload.stage === "model") return "分析任务与生成答复";
+  if (event.payload.stage === "model") return "模型处理请求";
   if (event.payload.stage === "recovery") return "从检查点恢复任务";
   if (event.payload.stage === "tool") {
     const names: Record<string, string> = {
@@ -65,12 +65,16 @@ export function processStep(event: RunEvent): string | null {
       web_search: "网页搜索",
       text_stats: "文本统计",
       format_report: "报告排版",
+      export_document: "生成文件",
+      research_report: "研究并生成文件",
       weather_query: "天气查询",
       traffic_query: "路况查询",
     };
     const name =
       names[event.payload.name || ""] || event.payload.name || "授权工具";
-    // 工具执行失败与参数需要修正分别提示；成功事件只显示工具名称。
+    if (event.payload.status === "running") return `开始调用工具：${name}`;
+    // 成功事件在工具返回后发出，应明确表示完成，避免误读为此时才开始调用。
+    if (event.payload.status === "succeeded") return `工具已完成：${name}`;
     let failure = "";
     if (event.payload.status === "failed") {
       if (event.payload.error_code === "tool_arguments_invalid")
@@ -82,6 +86,16 @@ export function processStep(event: RunEvent): string | null {
     return `调用工具：${name}${failure}`;
   }
   return null;
+}
+
+/** 同一任务中所有流程文案只显示一次，包括多路或多轮 RAG 检索。 */
+export function appendProcessEvent(
+  previous: string[],
+  event: RunEvent,
+): string[] {
+  const label = processStep(event);
+  if (!label) return previous;
+  return previous.includes(label) ? previous : [...previous, label];
 }
 
 /** 展示可折叠的处理流程及工具调用，不显示内部推理内容。 */
@@ -122,11 +136,9 @@ export function ProcessSummary({
         </span>
       </summary>
       <ol>
-        {[...new Set(steps.length ? steps : ["准备任务"])].map(
-          (step, index) => (
-            <li key={`${index}:${step}`}>{step}</li>
-          ),
-        )}
+        {[...new Set(steps.length ? steps : ["准备任务"])].map((step) => (
+          <li key={step}>{step}</li>
+        ))}
       </ol>
     </details>
   );

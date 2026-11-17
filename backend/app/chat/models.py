@@ -1,6 +1,7 @@
 """身份与用户资源关系模型；类型、唯一约束和外键共同保护一致性。"""
 
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import (
     JSON,
@@ -39,5 +40,6 @@ class Message(Base):
     sequence: Mapped[int] = mapped_column(Integer)
     role: Mapped[str] = mapped_column(String(12))
     content: Mapped[str] = mapped_column(Text)
+    uploaded_files: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
     sources: Mapped[list[dict[str, object]]] = mapped_column(JSON, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)

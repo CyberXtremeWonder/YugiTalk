@@ -1,0 +1,67 @@
+.history-item {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  border-radius: 6px;
+}
+.history-item:hover,
+.history-item:focus-within {
+  background: var(--active);
+}
+.history-item > button:first-child {
+  flex: 1;
+  min-width: 0;
+}
+.history .conversation-menu-trigger {
+  flex: 0 0 28px;
+  width: 28px;
+  padding: 4px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 18px;
+  line-height: 1;
+}
+.conversation-menu {
+  position: fixed;
+  margin: 0;
+  padding: 5px;
+  width: 180px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 8px 28px rgb(0 0 0 / 12%);
+}
+.history .conversation-menu button,
+.history .conversation-menu a {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 9px;
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--text);
+  text-decoration: none;
+}
+.conversation-menu button:hover,
+.conversation-menu button:focus-visible,
+.conversation-menu a:hover,
+.conversation-menu a:focus-visible {
+  background: var(--active);
+}
+.conversation-menu svg {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.history .conversation-menu .conversation-menu-delete {
+  color: var(--danger, #e5484d);
+  border-top: 1px solid var(--line);
+  margin-top: 3px;
+}

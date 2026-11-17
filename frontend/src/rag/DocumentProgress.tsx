@@ -64,6 +64,26 @@ export function DocumentIndexProgress({ doc }: { doc: Document }) {
   const indexed = Math.min(total, Math.max(0, progress.indexed_chunks || 0));
   const stage = progress.failed_stage || progress.stage || doc.status;
   const title = steps.find(([key]) => key === stage)?.[1] || "索引处理";
+  if (progress.streaming) {
+    const bytes = progress.processed_bytes || 0;
+    const size = progress.source_bytes || doc.size;
+    return (
+      <div
+        className="document-index-progress"
+        data-failed={doc.status === "failed"}
+      >
+        <progress
+          aria-label={`索引进度：${doc.filename}`}
+          max={size || 1}
+          value={bytes}
+        />
+        <span>
+          {doc.status === "failed" ? "导入失败" : "逐行导入中"}
+          {` · 已处理 ${progress.processed_records || 0} 条记录，已索引 ${progress.indexed_chunks || 0} 块`}
+        </span>
+      </div>
+    );
+  }
   const percent = total > 0 ? Math.floor((indexed / total) * 100) : null;
   // 尚未解析出块总数时 progress 不设置 value，显示不确定进度，而不是伪造完成百分比。
   return (
@@ -89,9 +109,11 @@ export function DocumentIndexProgress({ doc }: { doc: Document }) {
 
 /** 竖向展示资料处理步骤、批次计数与准确失败位置。 */
 export function DocumentProgress({ doc }: { doc: Document }) {
-  // 成功导入后恢复普通文件列表，失败流程继续保留供用户定位。
-  if (["ready", "deleting", "deleted"].includes(doc.status)) return null;
+  // 有计时的已完成导入保留流程，供用户比较各阶段耗时。
+  if (["deleting", "deleted"].includes(doc.status)) return null;
+  if (doc.status === "ready" && !doc.progress?.stage_seconds) return null;
   const progress = doc.progress || {};
+  const timings = progress.stage_seconds;
   const total = progress.total_chunks || 0;
   const failed = doc.status === "failed";
   const currentStage =
@@ -117,10 +139,19 @@ export function DocumentProgress({ doc }: { doc: Document }) {
               <span aria-hidden="true">{symbols[state]}</span>
               {label}
               <small>{stateLabels[state]}</small>
+              {timings?.[key] !== undefined && (
+                <small>累计 {timings[key].toFixed(2)} 秒</small>
+              )}
             </li>
           );
         })}
       </ol>
+      {timings && (
+        <div className="import-counts">
+          {timings.sql !== undefined && <p>SQL 事务累计：{timings.sql.toFixed(2)} 秒</p>}
+          <p>累计阶段工作耗时；阶段可并行，不可相加作为总耗时，不含排队。</p>
+        </div>
+      )}
       {total > 0 && (
         <div className="import-counts">
           <label>

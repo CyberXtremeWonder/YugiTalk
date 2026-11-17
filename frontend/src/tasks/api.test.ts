@@ -82,3 +82,33 @@ test("恢复任务重读旧终态后，继续消费新的检查点与终态", as
   );
   expect(events.map((event) => event.sequence)).toEqual([1, 2, 3]);
 });
+
+test("暂停和继续事件保持同一事件流，后续正文继续追加直到终态", async () => {
+  const state = (sequence: number, status: string) =>
+    `id: run:${sequence}\nevent: run_state\ndata: ${JSON.stringify({ sequence, type: "run_state", payload: { status } })}\n\n`;
+  const fetch = vi
+    .fn()
+    .mockResolvedValue(
+      new Response(
+        frame(1) +
+          state(2, "paused") +
+          state(3, "running") +
+          frame(4) +
+          frame(5, "completed"),
+      ),
+    );
+  vi.stubGlobal("fetch", fetch);
+  const events: RunEvent[] = [];
+  await readEvents(run, new AbortController().signal, (event) =>
+    events.push(event),
+  );
+  expect(fetch).toHaveBeenCalledTimes(1);
+  expect(fetch.mock.calls[0][0]).toContain("run_state");
+  expect(events.map((event) => event.sequence)).toEqual([1, 2, 3, 4, 5]);
+  expect(
+    events
+      .filter((event) => event.type === "text_delta")
+      .map((event) => event.payload.text)
+      .join(""),
+  ).toBe("你好你好");
+});

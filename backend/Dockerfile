@@ -13,7 +13,10 @@ WORKDIR /app
 COPY --from=dependencies /opt/venv /opt/venv
 # 基础镜像仍需应用发行版安全更新；实际安装版本由镜像扫描报告记录。
 RUN apt-get update && apt-get upgrade -y --no-install-recommends \
+    && apt-get install -y --no-install-recommends fonts-wqy-zenhei \
     && rm -rf /var/lib/apt/lists/* && useradd --create-home yugitalk
+ENV TMPDIR="/var/lib/yugitalk/uploads"
+RUN mkdir -p /var/lib/yugitalk/uploads && chown yugitalk:yugitalk /var/lib/yugitalk/uploads
 COPY app ./app
 COPY start.py alembic.ini ./
 COPY migrations ./migrations

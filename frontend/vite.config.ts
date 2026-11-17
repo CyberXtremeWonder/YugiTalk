@@ -1,7 +1,8 @@
-import { defineConfig } from "vite";
+import { defineConfig } from "vitest/config";
 
 // 代理目标仅在服务端读取，不暴露到浏览器构建产物。
 export default defineConfig({
+  test: { include: ["src/**/*.test.{ts,tsx}"] },
   server: {
     host: "127.0.0.1",
     port: 5173,

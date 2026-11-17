@@ -51,6 +51,9 @@ def test_pdf_extracted_nul_is_removed_before_chunking(monkeypatch):
             pass
 
     monkeypatch.setattr("app.rag.parser.PdfReader", Reader)
+    monkeypatch.setattr(
+        "app.rag.parser.document_pages", lambda *args: [(1, "beforeafter")],
+    )
     assert parse(b"%PDF-test", ".pdf") == [{"page": 1, "content": "beforeafter", "ordinal": 1}]
 
 
@@ -104,6 +107,16 @@ def storage(monkeypatch: pytest.MonkeyPatch):
             """读取指定对象的内容，交由调用方执行权限与大小检查。"""
             return objects[key]
 
+        def put_file(self, key, source):
+            """保存测试上传流，真实 S3 分段上传由独立契约测试覆盖。"""
+            objects[key] = source.read()
+
+        def chunks(self, key, offset=0):
+            """模拟从指定字节恢复的分段读取。"""
+            data = objects[key]
+            for start in range(offset, len(data), 65536):
+                yield data[start:start + 65536]
+
         def remove(self, key):
             """模拟测试中的资料删除与授权检索操作。"""
             objects.pop(key, None)
@@ -111,7 +124,7 @@ def storage(monkeypatch: pytest.MonkeyPatch):
     class Index:
         """保存测试索引条目，模拟可控召回与资料删除。"""
 
-        def __init__(self, settings):
+        def __init__(self, settings, *, client=None):
             """保存实例所需的依赖与配置，初始化后续执行使用的状态。"""
             pass
 
@@ -162,7 +175,9 @@ def storage(monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.setattr("app.rag.router.ObjectStorage", Storage)
     monkeypatch.setattr("app.rag.indexing.ObjectStorage", Storage)
+    monkeypatch.setattr("app.rag.jsonl_indexing.ObjectStorage", Storage)
     monkeypatch.setattr("app.rag.indexing.VectorIndex", Index)
+    monkeypatch.setattr("app.rag.jsonl_indexing.VectorIndex", Index)
     monkeypatch.setattr("app.rag.retrieval.VectorIndex", Index)
     return objects, vectors
 
@@ -247,14 +262,14 @@ def test_parse_rejects_invalid_files(content, suffix):
         parse(content, suffix)
 
 
-def test_scanned_pdf_requires_ocr():
-    """验证无可提取文本的扫描文档明确要求文字识别。"""
+def test_scanned_pdf_uses_docling_ocr(monkeypatch):
+    """无文本层的扫描 PDF 交给 Docling OCR，不再直接拒绝。"""
     writer = PdfWriter()
     writer.add_blank_page(width=100, height=100)
     output = io.BytesIO()
     writer.write(output)
-    with pytest.raises(ValueError, match="pdf_requires_ocr"):
-        parse(output.getvalue(), ".pdf")
+    monkeypatch.setattr("app.rag.parser.document_pages", lambda *args: [(1, "OCR 识别文字")])
+    assert parse(output.getvalue(), ".pdf")[0]["content"] == "OCR 识别文字"
 
 
 def test_utf8_chunks_keep_overlap_and_positions():
@@ -432,7 +447,7 @@ def test_batch_progress_commits_before_call_and_preserves_counts(
         assert result["status"] == "failed" and progress["failed_stage"] == failure
         assert progress["indexed_chunks"] == 16
         assert progress["embedded_chunks"] == (
-            16 if failure == "embedding" else progress["total_chunks"]
+            16 if failure == "embedding" else min(32, progress["total_chunks"])
         )
         assert result["error_code"] == (
             "embedding_timeout" if failure == "embedding" else "vector_write_failed"
@@ -501,6 +516,7 @@ def test_long_context_summary_and_memory_injection(client: TestClient):
         row = db.get(Run, run["id"])
         first = db.scalar(select(Message))
         first.content = "重要：必须使用中文，数据库只能使用 Milvus。"
+        row.snapshot = {**row.snapshot, "conversation_upto_sequence": 59}
         for index in range(2, 60):
             db.add(
                 Message(
@@ -513,7 +529,7 @@ def test_long_context_summary_and_memory_injection(client: TestClient):
         memory = Memory(account_id=row.account_id, user_id=row.owner_id, content="示例优先 Python")
         db.add(memory)
         db.flush()
-        result = build_messages(db, row)
+        result = build_messages(db, row, lambda payload: "历史讨论的模型摘要。")
         summary = db.get(ConversationSummary, row.conversation_id)
         assert first.id in summary.source_ids and "只能使用 Milvus" in summary.content
         assert len(str(result).encode()) < 24000
