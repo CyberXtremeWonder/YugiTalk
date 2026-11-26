@@ -4,7 +4,7 @@
 
 训练集共 1,312 个问题、3,187 份正例标注。将其所有正负例段落去重后，共 12,029 个段落，按原始 ID 排序，每 100 段组成一个 Markdown 分包，共 121 个文件。每段保留标题、`MIRACL_DOCID` 和原文。问题文本与正负标签只保存在评测文件，不导入知识库。
 
-导入后产生 4,222 个叶子分块。知识库名称为 `MIRACL 中文训练集检索评测 20261016`，ID 为 `e6c758e2-0f72-4a08-868d-02f32017c17b`，归属现有 `backend/.env.rag-test` 配置中的评测账号。请使用该账号在开发页面查看。
+导入后产生 4,222 个叶子分块。复测时使用当前环境的评测知识库 ID。
 
 ## 文件位置
 
@@ -29,7 +29,8 @@
 
 ```powershell
 $env:PYTHONUTF8='1'
-backend/.venv/Scripts/python.exe scripts/evaluate-knowledge-retrieval.py --cases outputs/miracl-zh-train/cases.json --base e6c758e2-0f72-4a08-868d-02f32017c17b --output outputs/miracl-zh-train/evaluation
+$baseId = Read-Host '输入评测知识库 ID'
+backend/.venv/Scripts/python.exe scripts/evaluate-knowledge-retrieval.py --cases outputs/miracl-zh-train/cases.json --base $baseId --output outputs/miracl-zh-train/evaluation
 ```
 
 图谱开关必须在实际服务端控制，而不是只在评测终端设置。`.cache/miracl-evaluation.compose.yml` 是本轮关闭图谱的开发服务覆盖配置。若常规服务已恢复图谱功能，复测前先明确此次是否要包含已构建的图谱。此知识库本轮不自动补建图谱，普通索引完成并不表示关系图已生成。
